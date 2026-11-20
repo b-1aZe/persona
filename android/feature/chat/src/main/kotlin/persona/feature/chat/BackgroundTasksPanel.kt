@@ -34,7 +34,9 @@ import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -85,6 +87,8 @@ private fun backgroundDetail(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var held by remember(row.key, row.manager, actions, connection) { mutableStateOf(BackgroundDetail()) }
     val summary = row.waiting != null
+    // The session list can switch between full and bounded rows for this owner.
+    SideEffect { if (!summary) held = BackgroundDetail(row) }
     LaunchedEffect(row.key, row.manager, summary, actions, connection, exact, retry, lifecycle) {
         if (!summary || !exact || actions == null) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -108,23 +112,24 @@ private fun backgroundDetail(
                     delay(100)
                     requests.tryReceive()
                     held = held.copy(loading = true, failed = false)
-                    try {
-                        val fresh = actions.completeRow(latest)?.takeIf {
+                    val fresh = try {
+                        actions.completeRow(latest)?.takeIf {
                             it.key == row.key && it.manager == row.manager && it.waiting == null
                         }
-                        held = if (fresh != null) BackgroundDetail(row = fresh) else held.copy(loading = false, failed = true)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
-                        held = held.copy(loading = false, failed = true)
+                        null
                     }
+                    currentCoroutineContext().ensureActive()
+                    held = if (fresh != null) BackgroundDetail(row = fresh) else held.copy(loading = false, failed = true)
                 }
             }
         }
     }
     return when {
         !summary -> BackgroundDetail(row)
-        !exact || actions == null -> BackgroundDetail(failed = true)
+        !exact || actions == null -> held.copy(loading = false, failed = true)
         else -> held.copy(loading = held.loading || held.row == null && !held.failed)
     }
 }

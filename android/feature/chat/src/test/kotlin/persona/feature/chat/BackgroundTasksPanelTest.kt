@@ -15,6 +15,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.*
 import org.junit.Rule
@@ -29,6 +30,9 @@ import persona.core.contracts.Resolution
 import persona.core.contracts.Session
 import persona.core.contracts.SessionKey
 import persona.core.contracts.Workflow
+import persona.core.contracts.api.ChatAction
+import persona.core.contracts.api.ChatActionResult
+import persona.core.contracts.api.ChatActions
 import persona.core.contracts.api.ChatRepository
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.InteractionCenter
@@ -104,6 +108,58 @@ class BackgroundTasksPanelTest {
         rule.onNodeWithContentDescription("Back").performClick()
         waitText("Completed")
         rule.onNode(hasText("Watch the build") and hasClickAction()).assertExists()
+    }
+
+    @Test fun summarizesAFullRowWithoutLosingTheOpenDetailDuringAnExactReadFailure() {
+        val task = active.copy(outputFile = "/project/logs/result.txt")
+        val full = owner.copy(background = listOf(task))
+        val summary = full.copy(waiting = false, background = null, workflows = null)
+        val shown = mutableStateOf(full)
+        val reads = CopyOnWriteArrayList<Session>()
+        val failed = CompletableDeferred<Session>()
+        val recovered = CompletableDeferred<Session>()
+        val actions = object : ChatActions {
+            override suspend fun isMuted(session: Session) = false
+            override suspend fun execute(session: Session, action: ChatAction): ChatActionResult = error("unexpected chat action")
+            override suspend fun verify(session: Session, action: ChatAction): ChatActionResult = error("unexpected chat verification")
+            override suspend fun completeRow(session: Session): Session {
+                reads += session
+                return if (reads.size == 1) failed.await() else recovered.await()
+            }
+        }
+        val files = object : FixtureBackgroundFiles() {
+            override suspend fun readLogTail(machineId: String, cwd: String, path: String, manager: String?) =
+                SessionLogTail("Checking progress.\n", false)
+        }
+        val request = BackgroundPanelRequest(owner.key, owner.manager, BackgroundDestination.Command(task.id, task))
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                BackgroundTasksPanel(request, shown.value, actions, null, true, files, null, null, null, {})
+            }
+        }
+        waitText("Checking progress.", substring = true)
+        rule.runOnIdle { shown.value = summary }
+        rule.waitUntil(10_000) { reads.size == 1 }
+        assertEquals(summary, reads.single())
+        rule.onNodeWithText("Checking progress.", substring = true).assertExists()
+        rule.onNodeWithTag("background-list").assertDoesNotExist()
+
+        rule.runOnIdle { failed.completeExceptionally(IllegalStateException("temporary lookup failure")) }
+        rule.waitForIdle()
+        rule.onNodeWithText("Checking progress.", substring = true).assertExists()
+        rule.onNodeWithTag("background-list").assertDoesNotExist()
+        rule.onNodeWithContentDescription("Back").performClick()
+        waitText("Could not load background tasks.")
+        rule.onNodeWithText("Retry").performClick()
+        rule.waitUntil(10_000) { reads.size == 2 }
+        rule.onNode(hasText("Watch the build") and hasClickAction()).performClick()
+        rule.runOnIdle {
+            recovered.complete(full.copy(background = emptyList(), backgroundEnded = listOf(
+                task.copy(status = "failed", endedAt = now.toString(), exitCode = 5),
+            )))
+        }
+        waitText("Exit code")
+        rule.onNodeWithText("5").assertExists()
     }
 
     @Test fun aMissingOlderHubOutcomeSaysUnknownInsteadOfCompleted() {

@@ -57,11 +57,13 @@ class BackgroundTasksShotsTest {
 
     private fun capture(scale: String) {
         var look by mutableStateOf(Look(AppStyle.Glass, false, BackgroundDestination.List))
+        var summarized by mutableStateOf(false)
+        val summary = row.copy(waiting = false, background = null, backgroundEnded = null, workflows = null)
         val output = File(System.getProperty("persona.shots") ?: "build/background-task-shots").apply { mkdirs() }
         rule.setContent {
             key(look) {
                 PersonaTheme(style = look.style, darkTheme = look.dark, reduceMotion = true) {
-                    BackgroundTasksPanel(BackgroundPanelRequest(row.key, row.manager, look.target), row,
+                    BackgroundTasksPanel(BackgroundPanelRequest(row.key, row.manager, look.target), if (summarized) summary else row,
                         actions = null, connection = null, exact = false, files = files,
                         onStopLoop = null, onOpenFile = {}, onOpenAgent = {}, onDismiss = {})
                 }
@@ -82,6 +84,13 @@ class BackgroundTasksShotsTest {
                     val name = listOf(scene, style.name.lowercase(), if (dark) "dark" else "light", scale).joinToString("-")
                     val bitmap = rule.onNodeWithTag("background-panel").captureToImage().asAndroidBitmap()
                     File(output, "$name.png").outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                    if (scene == "command" && style == AppStyle.Glass) {
+                        rule.runOnIdle { summarized = true }
+                        rule.onNodeWithTag("background-list").assertDoesNotExist()
+                        val retained = rule.onNodeWithTag("background-panel").captureToImage().asAndroidBitmap()
+                        assertTrue("The retained command detail should keep its appearance ($name)", bitmap.sameAs(retained))
+                        rule.runOnIdle { summarized = false }
+                    }
                 }
             }
         }
