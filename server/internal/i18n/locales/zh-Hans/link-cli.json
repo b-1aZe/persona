@@ -1,4 +1,6 @@
 {
+  "access_stdin": "请通过管道将服务令牌 JSON 传给 cloudflare-access --stdin，或使用 --off。",
+  "access_invalid": "Cloudflare Access 配置无效。",
   "active_also_paired": "主动模式也配对过（hub 上的「{machine}」）：persona-link mode active 切回去",
   "address_added": "加好了：{address}",
   "ago": "{duration}前",

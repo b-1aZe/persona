@@ -1,7 +1,6 @@
 package link
 
 import (
-	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -41,7 +40,7 @@ func (a CloudflareAccess) valid() bool {
 
 func SetCloudflareAccess(path string, a *CloudflareAccess) error {
 	if a != nil && !a.valid() {
-		return errors.New("expected an HTTPS origin and a nonempty service token")
+		return newTextError("link-errors.access_token_invalid", nil)
 	}
 	return Update(path, func(c *Config) error { c.CloudflareAccess = a; return nil })
 }

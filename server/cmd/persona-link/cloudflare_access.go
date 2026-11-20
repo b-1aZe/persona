@@ -16,12 +16,12 @@ func cloudflareAccessCmd(e *env, args []string) error {
 		return link.SetCloudflareAccess(e.configPath(), nil)
 	}
 	if args[0] != "--stdin" || e.stdinIsTerminal() {
-		return errors.New("pipe the service token JSON into cloudflare-access --stdin, or use --off")
+		return errors.New(terminalText("link-cli.access_stdin"))
 	}
 	var a link.CloudflareAccess
 	data, err := io.ReadAll(io.LimitReader(e.stdin, 8193))
 	if err != nil || len(data) > 8192 || json.Unmarshal(data, &a) != nil {
-		return errors.New("invalid Cloudflare Access configuration")
+		return errors.New(terminalText("link-cli.access_invalid"))
 	}
 	return link.SetCloudflareAccess(e.configPath(), &a)
 }
