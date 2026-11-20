@@ -517,8 +517,11 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // amount and currency for an official DeepSeek launcher, with no bar; the popover's longer words load with it. 260 B in
 // ja, measured in one environment against main c4459e56f3 (ja 482,994 B to 483,254 B; en 480,067 B to 480,344 B,
 // zh-Hans 480,845 B to 481,098 B). The budget is main's 483,058 B ceiling plus those 260 B.
-// Merged, the budget adds both measured deltas (85 B + 260 B) to main's 483,058 B ceiling.
-export const FIRST_SCREEN_BUDGET = 483_403;
+// #7524: Starred adds 610 B in ja against 4dc8a1ee44 (483,143 B to 483,753 B) for the route, compact index,
+// start-page availability, sidebar and message identity. The snapshots, their operations and deep-link paging
+// load on demand. The bound leaves 37 B above the measured ja size.
+// Merged with #7524, the budget adds #11825's 260 B to main's 483,790 B ceiling, which includes #11804 + #11820.
+export const FIRST_SCREEN_BUDGET = 484_050;
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
 const NAME_HASH = /-([A-Za-z0-9_-]{8})\.[^./]+$/;
