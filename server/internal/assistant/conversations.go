@@ -327,10 +327,14 @@ type relayBook struct {
 	holds    map[string]*time.Timer // by conversation: drains its queue again when the hold for the owner ends
 	stuck    map[string]relayMsg    // by conversation: the message that could not go in at the last drain (pickLocked)
 	// failedAt: by conversation, when a delivery into it last failed because it did not take the message (it did not
-	// start, its computer was away): that message, when nothing else may go, waits relayRetryGap for its next try, so a
-	// conversation that cannot start is not cold-started again on every session list (#10194). In memory: a restart
-	// tries at once.
+	// start, its computer was away): that message, when nothing else may go, waits relayRetryGap for its next try. A
+	// role-change refusal instead holds every message (roleChange below): passing over the last failed message must not
+	// let another one retry that refusal on every session list (#10194, #13918). In memory: a restart tries at once.
 	failedAt map[string]time.Time
+	// roleChange: by conversation, a role-change busy refusal waits for the old process's work to end. The value says a
+	// session list has shown that work since the refusal. While shown, no message goes; the first later idle list releases
+	// at once. If no list ever shows it, failedAt remains the bounded fallback (#13918). In memory, like failedAt.
+	roleChange map[string]bool
 	// ownerTurns: the conversations whose round the owner is on, in memory only (#6394). While one is set, every
 	// queued message waits, whatever its rank: the owner's own message always goes before the queue. A restart falls
 	// back on the persisted Spoke presence window (relay_presence.go).
@@ -414,6 +418,7 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 		b.quoted, b.roundsFrom = map[string]time.Time{}, map[string]time.Time{}
 		b.stuck = map[string]relayMsg{}
 		b.failedAt = map[string]time.Time{}
+		b.roleChange = map[string]bool{}
 		b.ownerTurns = map[string]ownerTurn{}
 	}
 	return true
@@ -865,6 +870,8 @@ func (msg relayMsg) source() *proto.MessageSource {
 		return &proto.MessageSource{Kind: proto.SourceConversation, ConversationID: msg.From, Title: msg.FromTitle}
 	case superviseTool:
 		return &proto.MessageSource{Kind: proto.SourceSupervision}
+	case prFollowupTool, taskEndTool, relayRefusedTool, spawnNoticeTool, chatReplyTool:
+		return &proto.MessageSource{Kind: proto.SourceNotice, Title: "Persona"}
 	default:
 		return nil
 	}
@@ -900,7 +907,7 @@ func (s *Service) deliverRelay(ctx context.Context, machine, to string, msg rela
 	} else if s.isBackground(ctx, to) {
 		s.backgroundModel(ctx, params) // its own model purpose, on every message as the main chat's is (supervise_background.go)
 	}
-	s.availInput(machine, to, relayKind(msg), time.Now()) // a notice has no message source of its own
+	s.availInput(machine, to, relayKind(msg), time.Now())
 	if msg.Tool == superviseTool {
 		// Register only after admission, but before dispatch: a fast MCP call may precede assistant.send's answer.
 		s.holdPushes(ctx, to)
@@ -954,6 +961,7 @@ func relayDeliveryText(msg relayMsg) string {
 // notice starts.
 func (s *Service) relayDelivered(ctx context.Context, to string, msg relayMsg) {
 	if msg.Tool == superviseTool {
+		s.askRelayDelivered(to, msg)
 		return
 	}
 	if msg.Tool == taskEndTool || msg.Tool == prFollowupTool || msg.Tool == relayRefusedTool {
@@ -1077,34 +1085,61 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 		b.mu.Unlock()
 		return
 	}
-	var due []string
+	type dueRelay struct {
+		id         string
+		background bool // the list used for this try showed background work
+	}
+	var due []dueRelay
 	held := map[string]time.Duration{}
 	now := time.Now()
 	for _, c := range list {
-		if len(b.st.Queue[c.SessionID]) > 0 && c.Status != proto.StatusWorking && !c.Starting && !b.draining[c.SessionID] && !b.replacing[c.SessionID] {
-			i, wait := b.pickLocked(c.SessionID, leads[c.SessionID], now)
-			if last, stuck := b.stuck[c.SessionID]; stuck && i >= 0 && b.st.Queue[c.SessionID][i] == last {
-				// Only the message it failed to take is left to go: tried again after a gap, not on every list.
-				if gap := relayRetryGap - now.Sub(b.failedAt[c.SessionID]); gap > 0 {
-					held[c.SessionID] = gap
-					continue
-				}
-			}
-			if i < 0 {
-				held[c.SessionID] = wait
+		id := c.SessionID
+		if len(b.st.Queue[id]) == 0 || b.draining[id] || b.replacing[id] {
+			continue
+		}
+		background := backgroundRunning(c)
+		sawWork, waiting := b.roleChange[id]
+		if waiting && (c.Status == proto.StatusWorking || c.Starting || background) {
+			// A role-change refusal is an event gate, not a poll: the first list with all of the old process's work over
+			// releases it. This also covers background tasks, which do not make the node's foreground Status working.
+			b.roleChange[id] = true
+			continue
+		}
+		if c.Status == proto.StatusWorking || c.Starting {
+			continue
+		}
+		if waiting && sawWork {
+			delete(b.roleChange, id)
+			delete(b.failedAt, id) // work completion is the retry event; do not add another gap after it
+			waiting = false
+		}
+		i, wait := b.pickLocked(id, leads[id], now)
+		if i < 0 {
+			held[id] = wait
+			continue
+		}
+		last, stuck := b.stuck[id]
+		if waiting || (stuck && b.st.Queue[id][i] == last) {
+			// A role-change refusal belongs to the conversation: pickLocked passing over b.stuck must not let two
+			// messages alternate around the gap (#13918). Other failures keep their per-message fairness (#10194).
+			if gap := relayRetryGap - now.Sub(b.failedAt[id]); gap > 0 {
+				held[id] = gap
 				continue
 			}
-			b.frontLocked(c.SessionID, i)
-			b.draining[c.SessionID] = true
-			due = append(due, c.SessionID)
 		}
+		b.frontLocked(id, i)
+		b.draining[id] = true
+		due = append(due, dueRelay{id: id, background: background})
 	}
 	b.mu.Unlock()
 	for id, wait := range held {
 		s.drainAfter(machine, id, wait)
 	}
-	for _, id := range due {
-		go func(id string) {
+	for _, next := range due {
+		go func(id string, background bool) {
+			// A transfer must finish before a supervision drain selects its routing state.
+			s.supervise.routingMu.RLock()
+			defer s.supervise.routingMu.RUnlock()
 			b.mu.Lock()
 			q := b.st.Queue[id]
 			if len(q) == 0 {
@@ -1187,8 +1222,14 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 			}
 			delete(b.stuck, id)
 			delete(b.failedAt, id)
+			delete(b.roleChange, id)
 			if err != nil && !keep && !leaves && failure != relayFailedInDoubt {
 				b.failedAt[id] = time.Now()
+				if roleChangeBusy(err) {
+					// If this try's own list already showed background work, the next all-idle list is its completion
+					// event. Otherwise one active list must be seen first; absent that, relayRetryGap is the fallback.
+					b.roleChange[id] = background
+				}
 			}
 			taken := false
 			var replay []superviseSignal
@@ -1233,7 +1274,7 @@ func (s *Service) drainRelays(machine string, list []proto.Session) {
 			} else if !keep && err != nil && !refused { // relayRefused logged a refusal
 				s.logf("relay to %s: %v", short(id), err)
 			}
-		}(id)
+		}(next.id, next.background)
 	}
 }
 
@@ -1519,8 +1560,12 @@ func (s *Service) toolConversationNew(ctx context.Context, self string, args jso
 		Text  string   `json:"text"`
 		Tags  []string `json:"tags"`
 		Quote string   `json:"quote"`
+		Tier  string   `json:"tier"`
+		Pin   bool     `json:"pin"`
 	}
-	_ = json.Unmarshal(args, &a)
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(a.Text) == "" {
 		return "", errors.New("text is empty")
 	}
@@ -1540,6 +1585,14 @@ func (s *Service) toolConversationNew(ctx context.Context, self string, args jso
 	quote, err := s.resolveQuote(ctx, self, a.Quote) // before relayAllowed: a refused quote uses up no rate
 	if err != nil {
 		return "", err
+	}
+	var preset ModelTier
+	a.Tier = strings.TrimSpace(a.Tier)
+	if a.Tier != "" {
+		preset, err = s.tierModel(ctx, a.Tier)
+		if err != nil {
+			return "", err
+		}
 	}
 	counted := time.Now()
 	hop, _, err := s.relayAllowedOn(s.relayRouteFor(ctx, self), self, relayNewKey, counted) // an opening message is a request, never an answer
@@ -1562,30 +1615,54 @@ func (s *Service) toolConversationNew(ctx context.Context, self string, args jso
 	if err != nil {
 		return "", err
 	}
-	c, err := s.startConversation(sctx, startParams{Text: relayText(msg), Source: msg.source(), Space: space, Origin: OriginSpawned, OriginRef: self})
+	c, err := s.startSignedIn(sctx, StartParams{Text: prompts.MessageSourceText(relayText(msg), msg.source()), Space: space, Origin: OriginSpawned, OriginRef: self,
+		Launcher: preset.Launcher, Model: preset.Model, Effort: preset.Effort, RequireLauncher: a.Tier != ""})
 	if err != nil {
 		return "", err
 	}
 	started = true
-	s.titleNew(c.MachineID, c.SessionID, time.Now())
-	tagNote := quoteNote(quote)
-	if len(tags) > 0 {
-		// The conversation already exists: a tag write that fails must not be reported as a failed start.
-		if _, err := s.setConversationTags(sctx, c.MachineID, c.SessionID, tags, titleByAssistant); err != nil {
-			return fmt.Sprintf("Started conversation %s; it is working on the message now and is named after its first turn. It shows up in the app's sidebar. Its tags could not be saved: %v", c.SessionID, err), nil
-		}
-		tagNote += " It is born with tags: " + strings.Join(tags, ", ") + "."
-	}
 	b := &s.relays
 	b.mu.Lock()
+	pinKept := false
 	if s.relayLocked(ctx) {
 		b.st.Hops[c.SessionID] = relayHop{Hop: hop, At: time.Now().UTC(), From: self} // its report back is the answer
 		// Followed until it reports back: a turn that fails or ends without a word tells self (spawned.go, #4669).
-		b.st.Spawned[c.SessionID] = spawnedConv{Parent: self, At: time.Now().UTC()}
-		s.saveRelayLocked()
+		spawn := spawnedConv{Parent: self, At: time.Now().UTC()}
+		if a.Pin {
+			spawn.PinMachine = c.MachineID
+		}
+		b.st.Spawned[c.SessionID] = spawn
+		pinKept = s.saveRelayLocked() == nil
 	}
 	b.mu.Unlock()
-	return fmt.Sprintf("Started conversation %s; it is working on the message now and is named after its first turn. It shows up in the app's sidebar.%s", c.SessionID, tagNote), nil
+	s.titleNew(c.MachineID, c.SessionID, time.Now())
+	note := quoteNote(quote)
+	lang := s.lang(ctx)
+	if a.Tier != "" {
+		run := ModelTier{Launcher: c.Launcher, Model: c.Model, Effort: c.Effort}
+		note += " " + i18n.T(lang, "assistant-conversations.started_on", i18n.Args{"run": run.runs()})
+		pick := modelPick{MachineID: c.MachineID, Launcher: preset.Launcher, Model: preset.Model, Effort: preset.Effort, At: time.Now().UTC()}
+		if err := s.setModelPick(sctx, c.SessionID, &pick); err != nil {
+			note += " " + i18n.T(lang, "assistant-conversations.pick_save_failed", i18n.Args{"error": err.Error()})
+		}
+	}
+	if a.Pin && pinKept {
+		note += " " + i18n.T(lang, "assistant-conversations.pin_requested")
+		// A short first turn can finish before the start call returns its session ID.
+		if child, ok := s.session(ctx, c.MachineID, c.SessionID); ok && child.Status == proto.StatusDone {
+			s.spawnPinAfterTurn(ctx, c.MachineID, c.SessionID)
+		}
+	} else if a.Pin {
+		note += " " + i18n.T(lang, "assistant-conversations.pin_save_failed")
+	}
+	if len(tags) > 0 {
+		if _, err := s.setConversationTags(sctx, c.MachineID, c.SessionID, tags, titleByAssistant); err != nil {
+			note += fmt.Sprintf(" Its tags could not be saved: %v", err)
+		} else {
+			note += " It is born with tags: " + strings.Join(tags, ", ") + "."
+		}
+	}
+	return fmt.Sprintf("Started conversation %s; it is working on the message now and is named after its first turn. It shows up in the app's sidebar.%s", c.SessionID, note), nil
 }
 
 func (s *Service) toolConversationSend(ctx context.Context, self string, args json.RawMessage) (string, error) {
@@ -1617,6 +1694,10 @@ func (s *Service) toolConversationSend(ctx context.Context, self string, args js
 	if err := s.dispatchSendGuard(ctx, self, c.MachineID, c.SessionID, a.Text); err != nil {
 		return "", err
 	}
+	fanned := ""
+	if !later && strings.TrimSpace(a.Quote) == "" && !s.sendFanout.admit(self, c.SessionID, time.Now()) {
+		later, fanned = true, fmt.Sprintf(fanoutNote, fanoutWide, int(fanoutWindow/time.Minute)) // conversation_fanout.go
+	}
 	if later {
 		// Kept for the receiver, not delivered: no turn, no hop, no place in the rate (relay_later.go, #11614).
 		from, err := s.relayFrom(ctx, self)
@@ -1629,8 +1710,8 @@ func (s *Service) toolConversationSend(ctx context.Context, self string, args js
 		}
 		s.spawnReported(self, c.SessionID) // a quiet report still answers the conversation that opened this one
 		s.publish(ctx)                     // the receiver shows it waiting above its composer
-		return fmt.Sprintf("Kept for %q without waking it (%d kept there): it goes in with the next message that conversation gets for anything else. No reply will come from it; no need to send it again.",
-			conversationName(c, s.settings(ctx).Main), n), nil
+		return fmt.Sprintf("Kept for %q without waking it (%d kept there): it goes in with the next message that conversation gets for anything else. No reply will come from it; no need to send it again.%s",
+			conversationName(c, s.settings(ctx).Main), n, fanned), nil
 	}
 	from, err := s.relayFrom(ctx, self)
 	if err != nil {
@@ -1756,15 +1837,15 @@ func (s *Service) selfSpace(ctx context.Context, self string) (string, bool) {
 }
 
 // knownSpace is selfSpace for the tools that reach other conversations. One that can't be told is taken for the
-// assistant's own: those tools then reach the assistant's conversations only, never the health space's, so health
-// conversations stay out of reach either way (the worst case is a health conversation seeing the assistant's list).
+// assistant's own: those tools then reach the assistant's conversations only, never a space's, so a space's
+// conversations stay out of reach either way (the worst case is a space's conversation seeing the assistant's list).
 func (s *Service) knownSpace(ctx context.Context, self string) (string, error) {
 	space, _ := s.selfSpace(ctx, self)
 	return space, nil
 }
 
-// ownSpaceConversation finds conversation id among those of self's space: the health space's conversations and the
-// assistant's own don't read, rename, archive or message each other.
+// ownSpaceConversation finds conversation id among those of self's space: the conversations of different spaces (the
+// assistant's own included) don't read, rename, archive or message each other.
 func (s *Service) ownSpaceConversation(ctx context.Context, self, id string) (proto.Session, error) {
 	space, err := s.knownSpace(ctx, self)
 	if err != nil {

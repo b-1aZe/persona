@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/botcard"
 	"github.com/nwverse/persona/server/internal/db"
-	"github.com/nwverse/persona/server/internal/feishubot"
 	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/lazyre"
 )
@@ -24,7 +24,7 @@ var passWords = lazyre.New(`(?i)^\s*(验收)?(通过|没问题|可以|好的?|ok
 // conclusionQuestion handles free text on a conclusion before acceptance can take it as an answer. A displayed
 // option or bare confirmation continues through the existing reply path. Other text is a conversation with the
 // supervisor, so the card, its deadline and the task's decisions are untouched.
-func (s *Service) conclusionQuestion(ctx context.Context, ev *feishubot.MessageEvent, content *feishubot.Content, features FeishuFeatures) bool {
+func (s *Service) conclusionQuestion(ctx context.Context, ev *botcard.MessageEvent, content *botcard.Content, features FeishuFeatures) bool {
 	msg := ev.Message
 	id, earlier := s.acceptFor(msg.ParentID, msg.RootID)
 	if id == "" || earlier {
@@ -227,13 +227,17 @@ func (s *Service) answeredInWords(ctx context.Context, id string, askedAt time.T
 		b.mu.Unlock()
 		return
 	}
-	if decideAsk(a) {
+	decision := decideAsk(a)
+	if decision {
 		a.AcceptedAt = time.Now().UTC()
 	} else {
 		delete(b.asks, id)
 	}
 	s.saveAcceptLocked(ctx)
 	b.mu.Unlock()
+	if decision {
+		s.todoPushOver(id) // answered: its next push may ring
+	}
 }
 
 // withMediaDropped is note with, when the reply carried pictures or files, the line saying they did not go to the agent.
@@ -258,7 +262,7 @@ func acceptSucceeded() acceptResult { return acceptResult{taken: true} }
 func (s *Service) decisionNotDelivered(ctx context.Context, id string, askedAt time.Time, choice string, cause error) acceptResult {
 	l := s.botLang(ctx)
 	s.userDecided(ctx, id)
-	s.signal(superviseSignal{Todo: id, Kind: sigIdle, Key: "undelivered|" + askedAt.UTC().Format(time.RFC3339Nano),
+	s.signal(superviseSignal{Todo: id, Kind: sigIdle, Key: "undelivered|" + askedAt.UTC().Format(time.RFC3339Nano), Handoff: true,
 		Detail: i18n.T(l, "assistant-reports.decision_not_delivered", i18n.Args{"decision": clip(oneLine(choice), 200),
 			"error": clip(oneLine(i18n.Localize(cause, l)), 120)})})
 	return acceptResult{taken: true, undelivered: cause}
@@ -331,6 +335,10 @@ func (s *Service) acceptTryAsDismissalLocked(ctx context.Context, id, card strin
 			b.mu.Unlock()
 			return acceptResult{}, err
 		}
+	}
+	if decideAsk(a) && terminalResumeLabel(a.Recommend) {
+		b.mu.Unlock()
+		return acceptResult{}, i18n.Err("assistant-reports.manual_terminal_resume")
 	}
 	previousDueAt, previousAcceptedAt := a.DueAt, a.AcceptedAt
 	if a.AcceptedAt.IsZero() {
@@ -413,6 +421,9 @@ func (s *Service) acceptTryAsDismissalLocked(ctx context.Context, id, card strin
 		}
 	case cp.Conclusion:
 		// Seen: the review already closed the task and told where it came from; "verified" is for deployed work.
+	}
+	if decideAsk(&cp) {
+		s.todoPushOver(id) // taken: its next push may ring
 	}
 	completeDismissal()
 	s.updateAskCards(ctx, id, cp)

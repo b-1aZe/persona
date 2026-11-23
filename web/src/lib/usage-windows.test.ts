@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { initI18n } from "../i18n";
 import { balanceAccounts, balanceEmpty, balanceText } from "./usage-balance";
-import { accountPace, countdown, fullest, groupByProvider, isBalanceAccount, liveAccounts, pace, planNote, providerTitle, resetLabel, sampleAge, sortedWindows, sortForCard, sourceNames, providerTimeline, remainingText, timelinePosition, topAccounts, windowKey, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
+import { countdown, fullest, groupByProvider, isBalanceAccount, liveAccounts, parsePinnedUsageAccounts, planNote, providerTimeline, providerTitle, remainingText, resetLabel, sampleAge, selectSidebarUsageAccounts, sortedWindows, sortForCard, sourceNames, timelinePosition, topAccounts, windowKey, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
+import { accountPace, pace } from "./usage-pace";
 
 const NOW = new Date(2026, 10, 5, 10, 0, 0).getTime(); // local time, so same-day checks do not depend on the zone
 const at = (ms: number) => new Date(NOW + ms).toISOString();
@@ -142,6 +143,22 @@ describe("which accounts show", () => {
     expect(topAccounts([account("a", 20), account("b", 90, { stale: true })]).map((a) => a.id)).toEqual(["a", "b"]);
     expect(fullest({ ...account("x", 1), windows: [win("5h", 300, 30), win("7d", 10080, 70)] })).toBe(70);
   });
+  it("keeps tied sidebar percentages in provider and ID order across polls", () => {
+    const first = [
+      account("third", 38.1),
+      account("second", 38.4, { provider: "agy" }),
+      account("first", 38, { provider: "antigravity" }),
+    ];
+    const next = [
+      account("first", 38.4, { provider: "agy" }),
+      account("third", 38.4),
+      account("second", 38, { provider: "antigravity" }),
+    ];
+    for (const poll of [first, next]) {
+      expect(topAccounts(poll).map((a) => a.id)).toEqual(["first", "second"]);
+    }
+    expect(topAccounts([account("low", 38), account("high", 39)]).map((a) => a.id)).toEqual(["high", "low"]);
+  });
 });
 
 describe("accounts with several sources and per-model windows (#2595)", () => {
@@ -195,6 +212,60 @@ describe("prepaid balances (#11825)", () => {
     expect(kept[0].balance).toBeUndefined();
     expect(kept[0].problem).toBe("unreachable");
     expect(isBalanceAccount(kept[0])).toBe(true); // the provider still names a balance row, so the popover can say why
+  });
+});
+
+describe("pinned sidebar usage accounts (#12418)", () => {
+  const bal = (id: string, amount: string): UsageAccount => ({ id, provider: "deepseek", name: "DeepSeek", windows: [], sampled_at: at(-60_000), balance: { amount, currency: "CNY" } });
+  const live = (): UsageAccount[] => [
+    account("codex", 85, { provider: "codex", name: "Codex Pro" }),
+    account("claude", 60, { provider: "claude", name: "Claude Max" }),
+    account("agy", 15, { provider: "agy", name: "Antigravity" }),
+    bal("ds", "12.34"),
+  ];
+
+  it("parses stored IDs with deduplication and tolerates malformed JSON", () => {
+    expect(parsePinnedUsageAccounts(null)).toEqual([]);
+    expect(parsePinnedUsageAccounts("")).toEqual([]);
+    expect(parsePinnedUsageAccounts("{not-json")).toEqual([]);
+    expect(parsePinnedUsageAccounts('{"a":1}')).toEqual([]);
+    expect(parsePinnedUsageAccounts('["agy", "codex", "agy", "", "  ", 42, " ds "]')).toEqual(["agy", "codex", "ds"]);
+  });
+
+  it("keeps automatic top-2 + balance behavior when nothing is pinned", () => {
+    const picked = selectSidebarUsageAccounts(live(), []);
+    expect(picked.custom).toBe(false);
+    expect(picked.bars.map((a) => a.id)).toEqual(["codex", "claude"]);
+    expect(picked.balances.map((a) => a.id)).toEqual(["ds"]);
+  });
+
+  it("selects pinned window and balance accounts in pinned order", () => {
+    const onlyAgy = selectSidebarUsageAccounts(live(), ["agy"]);
+    expect(onlyAgy.custom).toBe(true);
+    expect(onlyAgy.bars.map((a) => a.id)).toEqual(["agy"]);
+    expect(onlyAgy.balances).toEqual([]);
+
+    const mixed = selectSidebarUsageAccounts(live(), ["agy", "ds", "codex"]);
+    expect(mixed.custom).toBe(true);
+    expect(mixed.bars.map((a) => a.id)).toEqual(["agy", "codex"]);
+    expect(mixed.balances.map((a) => a.id)).toEqual(["ds"]);
+
+    const onlyBalance = selectSidebarUsageAccounts(live(), ["ds"]);
+    expect(onlyBalance.custom).toBe(true);
+    expect(onlyBalance.bars).toEqual([]);
+    expect(onlyBalance.balances.map((a) => a.id)).toEqual(["ds"]);
+  });
+
+  it("shows surviving pinned accounts on partial loss and falls back cleanly when all pinned accounts are offline", () => {
+    const partial = selectSidebarUsageAccounts(live(), ["gone", "agy"]);
+    expect(partial.custom).toBe(true);
+    expect(partial.bars.map((a) => a.id)).toEqual(["agy"]);
+    expect(partial.balances).toEqual([]);
+
+    const fallback = selectSidebarUsageAccounts(live(), ["gone-1", "gone-2"]);
+    expect(fallback.custom).toBe(false);
+    expect(fallback.bars.map((a) => a.id)).toEqual(["codex", "claude"]);
+    expect(fallback.balances.map((a) => a.id)).toEqual(["ds"]);
   });
 });
 
