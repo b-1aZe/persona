@@ -10,13 +10,18 @@ import (
 
 func TestPlannedOrcaTaskGroupsWorkersAndClosesAfterAcceptance(t *testing.T) {
 	s, f := taskHerdrHub(t, nil)
+	f.mu.Lock()
 	f.devices = []Device{
 		{ID: "server", Name: "server", Home: "/home/me", Online: true, Reachable: true},
 		{ID: "box", Name: "box", Home: "/home/me", Online: true, Reachable: true, Engine: proto.EngineOrca},
 	}
+	f.mu.Unlock()
 	leader := startTaskLeader(t, s, f)
-	writer := planWorker(t, s, f, map[string]any{"workspace": "new"})
-	reader := planWorker(t, s, f, map[string]any{"readonly": true, "permission": "plan"})
+	if space, ok := s.taskSpaceOf(t.Context(), leader.ID); !ok || space.Host != proto.EngineOrca || space.ID != taskHerdrWorkspaceID {
+		t.Fatalf("leader's recorded Orca placement: %+v", space)
+	}
+	writer := planWorker(t, s, f, nil)
+	reader := planWorker(t, s, f, map[string]any{"title": "Review the changes", "readonly": true, "permission": "plan"})
 	starts := f.started()
 	create := taskWorktreeCreate(f)
 	if len(starts) != 3 || create["open_workspace"] != false || starts[1]["cwd"] != create["path"] {
@@ -39,6 +44,7 @@ func TestPlannedOrcaTaskGroupsWorkersAndClosesAfterAcceptance(t *testing.T) {
 		"verdict": "accepted", "note": "Verified", "checks": completeReviewChecks(todoNow(s, leader.ID))}); err != nil {
 		t.Fatal(err)
 	}
+	f.setSessions("box", taskCloseSession(writer.Agents[0].SessionID, true, false))
 	s.closeDoneTaskSpaces(ctx, time.Now(), doneSeen{})
 	if len(taskWorkspaceCloses(f)) != 0 {
 		t.Fatal("closed while the task still had a live Agent")

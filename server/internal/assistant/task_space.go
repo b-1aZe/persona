@@ -257,6 +257,11 @@ func (s *Service) attachTaskSpaceResume(ctx context.Context, machine, method str
 	if !ok || s.canonical(space.Machine) != s.canonical(machine) {
 		return ""
 	}
+	if space.Host == proto.EngineOrca {
+		// The worktree outlives cleanup. Each session resumes from its own node record;
+		// a worker on another host on this machine never inherits the Orca placement.
+		return root
+	}
 	params["task_id"] = root
 	if space.ID != "" {
 		params["workspace_id"] = space.ID

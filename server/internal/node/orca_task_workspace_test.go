@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/host"
+	"github.com/nwverse/persona/server/internal/orcart"
 	"github.com/nwverse/persona/server/internal/orcart/orcarttest"
 )
 
@@ -66,6 +67,15 @@ func TestOrcaTaskWorkspaceGroupsThreeAgentsAndKeepsUserTerminal(t *testing.T) {
 		procs.set(host.ParsePane(st.Pane).ID)
 		w.o.SetProcess(st.OrcaTerminal.Handle, orcarttest.ShellAtRest(42))
 	}
+	// Publish a sidebar layout from the fake runtime's actual terminal.create results.
+	var inventory struct {
+		Terminals []map[string]any `json:"terminals"`
+	}
+	if err := h.c.Call(t.Context(), orcart.ListTimeout, "terminal.list", map[string]any{"includeVisualLayouts": false}, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	w.o.SetTerminals(inventory.Terminals...)
+	w.o.SetRevision(w.src, 1)
 	layout, err := h.Snapshot(t.Context())
 	if err != nil || len(layout.Spaces) != 1 || len(layout.Slots) != 4 {
 		t.Fatalf("Orca sidebar before acceptance: %+v, %v", layout, err)

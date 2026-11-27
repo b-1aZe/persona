@@ -459,7 +459,10 @@ func (n *Node) closeOrcaTaskSpace(ctx context.Context, task, workspace string) (
 	if len(members) == 0 {
 		return nil, refusal(notTaskSpace, "the node has no record of this task in the Orca workspace", nil)
 	}
-	// The manager's list can lag a resume. Reconcile the task panes before touching the first terminal.
+	// The manager's list and the last display scan can lag a resume.
+	if _, err := h.agentProcs(0); err != nil {
+		return nil, err
+	}
 	if err := n.refreshHosts(ctx, h); err != nil {
 		return nil, err
 	}
