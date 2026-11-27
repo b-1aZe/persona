@@ -990,7 +990,7 @@ function SupervisorHeldCard({ ix }: { ix: Interaction }) {
 function ScreenCard({ ix }: { ix: Interaction }) {
   // The hub sets `command` only on a shell command's permission prompt (one choice, no free-text field).
   const plain = <PlainScreenCard ix={ix} />;
-  return ix.dialog?.command ? <Suspense fallback={plain}><CommandScreenCard ix={ix} /></Suspense> : plain;
+  return ix.dialog?.command ? <Suspense fallback={<fieldset disabled className="contents">{plain}</fieldset>}><CommandScreenCard ix={ix} /></Suspense> : plain;
 }
 
 function PlainScreenCard({ ix }: { ix: Interaction }) {

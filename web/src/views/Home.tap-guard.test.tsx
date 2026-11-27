@@ -49,7 +49,7 @@ const { setTapGuardClockForTest, TAP_GUARD_ATTR, TAP_GUARD_MS } = await import("
 import type { Interaction, Session } from "../lib/types";
 
 const session = { machine_id: "mac", session_id: "s1", title: "agent 1", cwd: "/code", status: "idle", state: "needs_you" } as Session;
-const permission = { id: "p1", kind: "permission", machine_id: "mac", session_id: "s1", tool_name: "Bash", tool_input: { command: "npm test" } } as Interaction;
+const permission = { id: "p1", kind: "permission", machine_id: "mac", session_id: "s1", tool_name: "Bash", tool_input: { command: "git status" } } as Interaction;
 const question = { id: "q1", kind: "question", machine_id: "mac", session_id: "s1", questions: [{ question: "which?", options: [{ label: "JPEG" }, { label: "PNG" }] }] } as Interaction;
 
 let now = 0;

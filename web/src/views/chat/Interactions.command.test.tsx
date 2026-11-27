@@ -147,3 +147,16 @@ describe("a command's permission prompt", () => {
     expect(fold.compareDocumentPosition(yes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+it("confirms a terminal push and sends only the terminal's chosen option", async () => {
+  const ix = card(104);
+  ix.dialog = { ...ix.dialog, command: "git push" };
+  await act(async () => root.render(<InteractionCard ix={ix} />));
+  await body();
+  expect(host.textContent).toContain(t("approval-impact.push"));
+  act(() => button(t("chat-interactions.allow")).click());
+  expect(calls).toEqual([]);
+  act(() => button(t("approval-impact.confirm")).click());
+  await flush();
+  expect(calls.map(call => call.body)).toEqual([{ option: "1" }]);
+});

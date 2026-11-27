@@ -54,6 +54,9 @@ it("renders, answers and shows the receipt through the real store and API", asyn
   const allow = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "允许");
   expect(allow).toBeDefined();
   act(() => allow!.click());
+  expect(writes).toEqual([]);
+  const confirm = [...host.querySelectorAll("button")].find(button => button.textContent === "确认允许");
+  act(() => confirm!.click());
   await flush();
   expect(writes).toEqual([{ url: "/api/v1/interactions/script-request/resolve", body: { allow: true } }]);
   expect(getState().interactions).toEqual([]);
@@ -65,4 +68,32 @@ it("shows an ended state for an unavailable id", async () => {
   await flush();
   expect(host.textContent).toContain("此请求已结束。");
   expect(writes).toEqual([]);
+});
+
+it("can cancel, opt out and restore confirmation for the same outward request", async () => {
+  const { setConfirmationEnabled } = await import("../lib/approval-confirmation");
+  const { t } = await import("../i18n");
+  cards[0] = { ...cards[0], tool_name: "Bash", tool_input: { command: "git push" } };
+  await refresh();
+  const click = (key: string) => act(() => {
+    [...host.querySelectorAll("button")].find(button => button.textContent === t(key))!.click();
+  });
+  try {
+    act(() => root.render(<RequestPage id="script-request" onToggleSidebar={() => {}} />));
+    await flush();
+    expect(host.textContent).toContain(t("approval-impact.push"));
+    click("chat-interactions.allow");
+    click("common.cancel");
+    expect(writes).toEqual([]);
+    act(() => setConfirmationEnabled(false));
+    expect(host.textContent).not.toContain(t("approval-impact.push"));
+    act(() => setConfirmationEnabled(true));
+    expect(host.textContent).toContain(t("approval-impact.push"));
+    act(() => setConfirmationEnabled(false));
+    click("chat-interactions.allow");
+    await flush();
+    expect(writes.map(write => write.body)).toEqual([{ allow: true }]);
+  } finally {
+    act(() => setConfirmationEnabled(true));
+  }
 });

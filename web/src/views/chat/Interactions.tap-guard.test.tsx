@@ -28,7 +28,7 @@ await loadPages();
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const permission = { id: "p_1", machine_id: "m", session_id: "s", kind: "permission", tool_name: "Bash", tool_input: { command: "npm test" }, summary: "Run the tests" } as Interaction;
+const permission = { id: "p_1", machine_id: "m", session_id: "s", kind: "permission", tool_name: "Bash", tool_input: { command: "git status" }, summary: "git status" } as Interaction;
 const opener = { ...permission, id: "p_open" };
 const twoQuestions = {
   id: "q_2", machine_id: "m", session_id: "s", kind: "question", tool_name: "AskUserQuestion",
