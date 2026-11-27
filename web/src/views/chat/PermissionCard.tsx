@@ -70,7 +70,8 @@ function ToolPermissionCard({ ix }: { ix: Interaction }) {
       approve();
     },
   });
-  const tapGuard = useChatCardTapGuard(ix, confirming ? ":confirm" : "");
+  // Opening confirmation is deliberate. Keep the guard for the incoming request, so its first confirmation tap lands.
+  const tapGuard = useChatCardTapGuard(ix);
   return (
     <Card
       kicker={t("chat-interactions.permission_kicker")}

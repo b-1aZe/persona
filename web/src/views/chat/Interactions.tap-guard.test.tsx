@@ -89,6 +89,19 @@ describe("a card appearing after the chat opened", () => {
     expect(calls[0].body).toMatchObject({ allow: false });
   });
 
+  it("takes the first deliberate confirmation tap after opening a code push for review", async () => {
+    await settleChat();
+    const push = { ...permission, tool_input: { command: "git push" } };
+    await act(async () => root.render(<InteractionCard ix={push} />));
+    act(() => vi.advanceTimersByTime(450));
+    await tap(findButton("允许"));
+    expect(calls).toEqual([]);
+    const confirm = findButton("确认允许");
+    await tap(confirm);
+    await flush();
+    expect(calls).toEqual([{ path: "/interactions/p_1/resolve", body: { allow: true } }]);
+  });
+
   it("still answers from the keyboard (Enter) while the pointer guard is running", async () => {
     await settleChat();
     await act(async () => root.render(<InteractionCard ix={permission} />));
