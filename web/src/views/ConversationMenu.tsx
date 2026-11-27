@@ -45,7 +45,7 @@ export const conversationMenuDeps: ConversationMenuDeps = {
   },
   clearMain: (s) => clearMainContext(s.session_id),
   copy: copyText,
-  notify: (text, tone, action) => toast(text, tone, action),
+  notify: (...args) => toast(...args),
 };
 
 /** A running conversation can be ended (iOS `status.isLive`). */
