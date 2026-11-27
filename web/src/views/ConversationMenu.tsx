@@ -165,6 +165,7 @@ export function assistantContextItems(
           label: t("assistant-assistantchat.new_main_ellipsis"),
           icon: "compose" as const,
           keepOpen: keepMenuOpen,
+          disabled: Boolean(o.clearingMain),
           onSelect: o.onNewMain,
         }]
       : []),

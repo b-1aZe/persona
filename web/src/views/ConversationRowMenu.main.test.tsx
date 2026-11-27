@@ -6,7 +6,8 @@ import { t } from "../i18n";
 import { ApiError } from "../lib/api";
 import { COMPACT_FEATURE, COMPACT_REQUESTED_EVENT, NEW_MAIN_FEATURE } from "../lib/compaction";
 import { CLEAR_MAIN_FEATURE, clearMainContext, forgetMainCleared, isMainClearing, mainCleared } from "../lib/main-clear";
-import { getState, reset } from "../lib/store";
+import { getState, refreshAssistant, reset, useStore } from "../lib/store";
+import { navigate } from "../lib/router";
 import type { Session } from "../lib/types";
 import { ConversationRowMenu, type ConversationRowMenuViewProps, type MainCapabilities } from "./ConversationRowMenu";
 import { NewMainDialog, type NewMainResult } from "./assistant/NewMainDialog";
@@ -74,6 +75,8 @@ beforeEach(() => {
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   });
   reset();
+  getState().features = [COMPACT_FEATURE, CLEAR_MAIN_FEATURE, NEW_MAIN_FEATURE];
+  getState().assistant = { machine_id: "hub", main: "main-1", conversations: [makeMainSession()] } as NonNullable<ReturnType<typeof getState>["assistant"]>;
   forgetMainCleared();
   host = document.createElement("div");
   anchor = document.createElement("button");
@@ -88,6 +91,7 @@ afterEach(() => {
   forgetMainCleared();
   reset();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("ConversationRowMenu main-chat parity & ABA/scope races", () => {
@@ -422,5 +426,107 @@ describe("clearMainContext busy tracking & scope-change fencing", () => {
 
   it("emits COMPACT_REQUESTED_EVENT constant cleanly for compaction tracking", () => {
     expect(COMPACT_REQUESTED_EVENT).toBe("persona:compact-requested");
+  });
+});
+
+function dialogButton(key: string) {
+  const button = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+    .find((b) => b.textContent?.trim() === t(key));
+  if (!button) throw new Error("Dialog action was missing");
+  return button;
+}
+
+describe("Main chat mutations from competing devices and menu entries", () => {
+  it("closes an open sidebar confirmation on capability withdrawal and rechecks before the next render", async () => {
+    const caps = createExternalBox({ canNewMain: true });
+    const post = vi.fn();
+    const close = vi.fn();
+    act(() => root.render(<ConversationRowMenu s={makeMainSession()} main anchor={anchor} onClose={close}
+      deps={{ mainCapabilities: caps.get, subscribeMainCapabilities: caps.subscribe, newMainDialogDeps: { startNewMain: post } }} />));
+    const entry = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(el => el.textContent?.includes(t("assistant-assistantchat.new_main_ellipsis")))!;
+    await act(async () => entry.click());
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
+    caps.setSilent({ canNewMain: false });
+    act(() => dialogButton("assistant-assistantchat.new_main").click());
+    expect(post).not.toHaveBeenCalled();
+    act(() => caps.notify());
+    expect(close).toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("serializes Clear and New from separate menus so the successful dock marker survives", async () => {
+    const gate = deferred<NewMainResult>();
+    const post = vi.fn(() => gate.promise);
+    act(() => root.render(<NewMainDialog open session={makeMainSession()} onClose={() => {}}
+      deps={{ startNewMain: post, refresh: async () => {}, navigateMain: () => {}, notify: () => {} }} />));
+    const clearGate = deferred<void>();
+    let clearing!: Promise<boolean>;
+    act(() => { clearing = clearMainContext("main-1", { post: () => clearGate.promise, refresh: async () => {}, home: () => {} }); });
+    expect(dialogButton("assistant-assistantchat.new_main").disabled).toBe(true);
+    act(() => dialogButton("assistant-assistantchat.new_main").click());
+    expect(post).not.toHaveBeenCalled();
+    await act(async () => { clearGate.resolve(); await clearing; });
+    expect(mainCleared()).toBe(true);
+
+    act(() => dialogButton("assistant-assistantchat.new_main").click());
+    const competingClear = vi.fn();
+    await clearMainContext("main-1", { post: competingClear });
+    expect(competingClear).not.toHaveBeenCalled();
+    await act(async () => gate.resolve({ ok: true }));
+    expect(mainCleared()).toBe(true);
+  });
+
+  it.each([false, true])("opens the winning main from a side chat unless the user navigates (leave=%s)", async (leave) => {
+    navigate({ name: "persona", sid: "side" });
+    const home = vi.fn(), closeDrawer = vi.fn();
+    const answer = deferred<Response>();
+    vi.stubGlobal("fetch", (url: string) => String(url).includes("/main/clear") ? answer.promise
+      : Promise.resolve(Response.json({ machine_id: "hub", main: "replacement", conversations: [] })));
+    let view!: ConversationRowMenuViewProps;
+    act(() => root.render(<ConversationRowMenu s={makeMainSession()} main anchor={anchor} onClose={() => {}}
+      onNavigate={closeDrawer} deps={{ navigate: home, renderView: (v) => { view = v; return null; } }} />));
+    let pending!: unknown;
+    act(() => { pending = view.items.find(i => i.key === "clear")!.onSelect(); });
+    if (leave) navigate({ name: "history" });
+    await act(async () => { answer.resolve(Response.json({ code: "main_changed", error: "changed" }, { status: 409 })); await pending; });
+    expect(getState().assistant?.main).toBe("replacement");
+    expect(home).toHaveBeenCalledTimes(leave ? 0 : 1);
+    expect(closeDrawer).toHaveBeenCalledTimes(leave ? 0 : 1);
+    navigate({ name: "persona" });
+  });
+
+  it("retries only the read after another device wins and the refresh fails", async () => {
+    const start = vi.fn(async () => { throw new ApiError(409, "changed", { code: "main_changed" }); });
+    const refresh = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(true);
+    const home = vi.fn(), close = vi.fn(), notify = vi.fn();
+    act(() => root.render(<NewMainDialog open session={makeMainSession()} onClose={close}
+      deps={{ startNewMain: start, refresh, navigateMain: home, notify }} />));
+    await act(async () => dialogButton("assistant-assistantchat.new_main").click());
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("offline");
+    expect(close).not.toHaveBeenCalled();
+    expect(home).not.toHaveBeenCalled();
+    await act(async () => dialogButton("personaassistant.retry").click());
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(home).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith(t("assistant-assistantchat.new_main_elsewhere"), "info");
+  });
+
+  it("finishes when a store update unmounts the dialog before the mutation reply", async () => {
+    const gate = deferred<NewMainResult>();
+    const home = vi.fn(), refresh = vi.fn(async () => true);
+    function CurrentMain() {
+      const sid = useStore((state) => state.assistant?.main);
+      return sid === "main-1" ? <NewMainDialog open session={makeMainSession()} onClose={() => {}}
+        deps={{ startNewMain: () => gate.promise, refresh, navigateMain: home, notify: () => {} }} /> : null;
+    }
+    act(() => root.render(<CurrentMain />));
+    act(() => dialogButton("assistant-assistantchat.new_main").click());
+    vi.stubGlobal("fetch", async () => Response.json({ machine_id: "hub", main: "replacement", conversations: [] }));
+    await act(async () => { await refreshAssistant(); });
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+    await act(async () => gate.resolve({ ok: true }));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(home).toHaveBeenCalledOnce();
   });
 });

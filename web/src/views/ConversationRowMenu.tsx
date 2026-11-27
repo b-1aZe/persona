@@ -5,7 +5,7 @@ import { useCanDeleteConversation } from "../lib/conversation-delete";
 import { CLEAR_MAIN_FEATURE, clearMainContext, useMainClearing } from "../lib/main-clear";
 import { navigate, routeAt, type Route } from "../lib/router";
 import { sameValue } from "../lib/stable-lines";
-import { hubHas, useStore } from "../lib/store";
+import { getState, hubHas, useStore } from "../lib/store";
 import type { Session } from "../lib/types";
 import { Dialog, Loading, Menu, type MenuItem, type ToastAction } from "../ui/atoms";
 import type { MenuAt } from "../ui/menu-model";
@@ -394,6 +394,7 @@ interface ConversationRowMenuBodyProps {
   scopeToken: string;
   openDelete: () => void;
   openNewMain: () => void;
+  canSubmitNewMain: () => boolean;
 }
 
 function ConversationRowMenuBody({
@@ -426,11 +427,13 @@ function ConversationRowMenuBody({
   scopeToken,
   openDelete,
   openNewMain,
+  canSubmitNewMain,
 }: ConversationRowMenuBodyProps) {
   useLayoutEffect(() => {
     canDeleteRef.current = canDelete;
     mainCapsRef.current = mainCaps;
-  }, [canDelete, canDeleteRef, mainCaps, mainCapsRef]);
+    if (startingNewMain && !mainCaps.canNewMain) onCloseRef.current();
+  }, [canDelete, canDeleteRef, mainCaps, mainCapsRef, onCloseRef, startingNewMain]);
 
   const menuDeps: ConversationMenuDeps = {
     rename: (session, title) =>
@@ -464,15 +467,16 @@ function ConversationRowMenuBody({
           const override = depsRef.current?.menuDeps?.clearMain;
           if (override) return Promise.resolve(override(session));
           const customNav = depsRef.current?.navigate;
+          const route = routeAt(location.href);
+          const viewingMain = route?.name === "persona" && (!route.sid || route.sid === session.session_id);
           return clearMainContext(session.session_id, {
-            home: () => {
-              const route = routeAt(location.href);
-              if (route?.name === "persona" && (!route.sid || route.sid === session.session_id)) {
+            home: (changedElsewhere) => {
+              if (viewingMain || changedElsewhere) {
                 (customNav ?? navigate)({ name: "persona" });
               }
             },
             afterHome: () => onNavigateRef.current?.(),
-            isScopeCurrent: isOpCurrent,
+            isScopeCurrent,
           });
         },
         undefined,
@@ -545,7 +549,7 @@ function ConversationRowMenuBody({
     at,
     items,
     deleting,
-    startingNewMain,
+    startingNewMain: startingNewMain && mainCaps.canNewMain,
     onClose: () => {
       if (isMenuCurrent()) onCloseRef.current();
     },
@@ -560,7 +564,7 @@ function ConversationRowMenuBody({
     newMainDialogKey: `${effectiveEpoch}:${newMainGen}`,
     newMainScopeKey: scopeToken,
     deleteDialogDeps: deps?.deleteDialogDeps,
-    newMainDialogDeps: deps?.newMainDialogDeps,
+    newMainDialogDeps: { ...deps?.newMainDialogDeps, canStart: canSubmitNewMain },
     renderMenu: deps?.renderMenu,
     renderDeleteConfirmation: deps?.renderDeleteConfirmation,
     renderNewMainDialog: deps?.renderNewMainDialog,
@@ -727,7 +731,7 @@ export function ConversationRowMenu({ s, main, leader, builtIn, anchor, at, onCl
       const raw = typeof dep === "function" ? dep(sRef.current, { main: mainRef.current, builtIn: builtInRef.current }) : dep;
       return Boolean(raw.canNewMain);
     }
-    return mainCapsRef.current.canNewMain;
+    return hubHas(getState().features, NEW_MAIN_FEATURE) && getState().assistant?.main === sRef.current.session_id;
   };
 
   const openDelete = () => {
@@ -780,6 +784,7 @@ export function ConversationRowMenu({ s, main, leader, builtIn, anchor, at, onCl
       scopeToken={trackedScope.token}
       openDelete={openDelete}
       openNewMain={openNewMain}
+      canSubmitNewMain={() => isMenuCurrent() && mainRef.current && liveCanNewMain()}
     />
   );
 

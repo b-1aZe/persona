@@ -9,7 +9,7 @@ import { toast } from "../ui/atoms";
 import { api, ApiError, credentialOwner, errorText, onCredentialChange } from "./api";
 import type { ComposerCommand } from "./extension-prompts";
 import { chosenManager, onManagerChoice } from "./manager-choice";
-import { navigate } from "./router";
+import { navigate, subscribeRoute } from "./router";
 import { getState, refreshAssistant, subscribe } from "./store";
 
 export const CLEAR_MAIN_FEATURE = "assistant_main_clear";
@@ -88,7 +88,7 @@ export interface ClearDeps {
   post: (expect: string) => Promise<unknown>;
   refresh: () => Promise<unknown>;
   /** To the main conversation's page (a conversation's own address showed the old one). */
-  home: () => void;
+  home: (changedElsewhere?: boolean) => void;
   toast: (text: string, tone: "error" | "info") => void;
   /** Optional hook invoked right after `home()` (e.g. closing the mobile sidebar drawer). */
   afterHome?: () => void;
@@ -98,7 +98,7 @@ export interface ClearDeps {
 
 const defaultDeps: ClearDeps = {
   post: (expect) => api(CLEAR_MAIN_PATH, { method: "POST", json: { expect } }),
-  refresh: () => refreshAssistant().catch(() => {}),
+  refresh: () => refreshAssistant(),
   home: () => navigate({ name: "persona" }),
   toast: (text, tone) => toast(text, tone),
 };
@@ -109,17 +109,29 @@ const busyListeners = new Set<() => void>();
 export function mainActionScope() {
   let changed = false;
   const owner = safeCredentialOwner();
+  const url = typeof location === "undefined" ? undefined : location.href;
+  let leftPage = false;
+  const offRoute = subscribeRoute(() => { if (location.href !== url) leftPage = true; });
   const invalidate = () => { changed = true; };
   const offManager = onManagerChoice(invalidate);
   const offOwner = onCredentialChange(invalidate);
   return {
     current: () => !changed && safeCredentialOwner() === owner,
-    release: () => { offManager(); offOwner(); },
+    samePage: () => !leftPage && (typeof location === "undefined" || location.href === url),
+    release: () => { offManager(); offOwner(); offRoute(); },
   };
 }
 
 function notifyBusy() {
   busyListeners.forEach((l) => l());
+}
+
+/** Clearing and replacing both archive the same main. Only one mutation may own its docked layout at a time. */
+export function beginMainChange(sid: string): (() => void) | undefined {
+  if (inFlight.has(sid)) return;
+  inFlight.add(sid);
+  notifyBusy();
+  return () => { inFlight.delete(sid); notifyBusy(); };
 }
 
 /** Whether a clear-main request is currently in flight (for `sid` when provided, or any main chat). */
@@ -150,11 +162,10 @@ function safeCredentialOwner(): string {
  *  True when it is done or another one shows now, so the /clear typed is used up; false when it failed (a toast says
  *  why), so it goes back into the box. A second clear of the same one while the first is on its way does nothing. */
 export async function clearMainContext(sid: string, overrides: Partial<ClearDeps> = {}): Promise<boolean> {
-  if (inFlight.has(sid)) return true;
+  const release = beginMainChange(sid);
+  if (!release) return true;
   const deps = { ...defaultDeps, ...overrides };
   const scope = mainActionScope();
-  inFlight.add(sid);
-  notifyBusy();
   try {
     const startedManager = currentManager();
     const stillCurrent = () => scope.current() && (deps.isScopeCurrent?.() ?? true);
@@ -164,39 +175,38 @@ export async function clearMainContext(sid: string, overrides: Partial<ClearDeps
     // before the request: the hub's push of the change can come before its answer, and the page must not show the
     // centered start page in between
     setCleared({ manager: startedManager, sid });
+    let changedElsewhere = false;
     try {
       await deps.post(sid);
-      if (!stillCurrent()) {
-        clearOwnMarked();
-        return true;
-      }
-      // (the refresh also drops the old conversation's cached first page: it is no longer the main one's)
-      await deps.refresh();
-      if (!stillCurrent()) {
-        clearOwnMarked();
-        return true;
-      }
-      deps.home();
-      deps.afterHome?.();
-      return true;
     } catch (e) {
       clearOwnMarked();
       if (!stillCurrent()) return false;
-      if (e instanceof ApiError && e.code === "main_changed") {
-        // another device replaced or cleared it: show what the hub has now
-        await deps.refresh();
-        if (!stillCurrent()) return true;
-        deps.home();
-        deps.afterHome?.();
-        deps.toast(t("assistant-assistantchat.new_main_elsewhere"), "info");
-        return true;
+      if (!(e instanceof ApiError && e.code === "main_changed")) {
+        deps.toast(t("assistant-assistantchat.clear_failed", { error: errorText(e) }), "error");
+        return false;
       }
-      deps.toast(t("assistant-assistantchat.clear_failed", { error: errorText(e) }), "error");
-      return false;
+      changedElsewhere = true;
     }
+    if (!stillCurrent()) {
+      clearOwnMarked();
+      return true;
+    }
+    try {
+      const updated = await deps.refresh();
+      if (updated === false && getState().assistant?.main === sid) throw new Error(t("chat-chatview.refresh_failed"));
+    } catch (e) {
+      if (stillCurrent() && scope.samePage()) deps.toast(t("personaassistant.load_failed", { error: errorText(e) }), "error");
+      // The mutation is settled. Do not put a destructive command back in the composer on a failed read.
+      return true;
+    }
+    if (stillCurrent() && scope.samePage()) {
+      deps.home(changedElsewhere);
+      deps.afterHome?.();
+      if (changedElsewhere) deps.toast(t("assistant-assistantchat.new_main_elsewhere"), "info");
+    }
+    return true;
   } finally {
     scope.release();
-    inFlight.delete(sid);
-    notifyBusy();
+    release();
   }
 }

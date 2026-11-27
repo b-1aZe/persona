@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "../../i18n";
 import { api, ApiError, errorText } from "../../lib/api";
-import { archivedMainTitle, NEW_MAIN_PATH, newMainBody } from "../../lib/compaction";
-import { forgetMainClearedIf, mainActionScope, markMainCleared } from "../../lib/main-clear";
+import { archivedMainTitle, NEW_MAIN_FEATURE, NEW_MAIN_PATH, newMainBody } from "../../lib/compaction";
+import { beginMainChange, forgetMainClearedIf, mainActionScope, markMainCleared, useMainClearing } from "../../lib/main-clear";
 import { chosenManager } from "../../lib/manager-choice";
 import { navigate } from "../../lib/router";
-import { getState, refreshAssistant } from "../../lib/store";
+import { getState, hubHas, refreshAssistant } from "../../lib/store";
 import type { Session } from "../../lib/types";
 import { Button, Dialog, toast } from "../../ui/atoms";
 import { Switch } from "./parts";
@@ -17,6 +17,7 @@ export interface NewMainResult {
 }
 
 export interface NewMainDialogDeps {
+  canStart?: () => boolean;
   startNewMain?: (carry: boolean, expect: string) => Promise<NewMainResult>;
   refresh?: () => Promise<unknown>;
   navigateMain?: () => void;
@@ -85,84 +86,76 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
 
   const setCarry = (next: boolean) => setCarryState({ epoch: effectiveEpoch, carry: next });
 
+  type Outcome = { message: string; tone: "ok" | "info" };
+  const [readRetry, setReadRetry] = useState<{ epoch: number; outcome: Outcome; error: string } | null>(null);
+  const retry = readRetry?.epoch === effectiveEpoch ? readRetry : null;
+  const changingMain = useMainClearing(session.session_id);
   const go = async () => {
-    const capturedEpoch = activeEpochRef.current;
+    const epoch = activeEpochRef.current;
     if (busyLockRef.current || !openRef.current || !mountedRef.current) return;
+    const sid = session.session_id;
+    const actions = depsRef.current;
+    const canStart = actions?.canStart ?? (() => hubHas(getState().features, NEW_MAIN_FEATURE) && getState().assistant?.main === sid);
+    if (!retry && !canStart()) { onCloseRef.current(); return; }
+    const release = beginMainChange(sid);
+    if (!release) return;
     const scope = mainActionScope();
-    const isCurrent = () => mountedRef.current && openRef.current && activeEpochRef.current === capturedEpoch && scope.current();
+    const manager = chosenManager() ?? "";
+    const forget = () => {
+      if (!actions?.markCleared) forgetMainClearedIf(sid, manager);
+      actions?.forgetCleared?.();
+    };
+    const currentView = () => scope.current() && scope.samePage() && (mountedRef.current
+      ? openRef.current && activeEpochRef.current === epoch
+      : Boolean(getState().assistant && getState().assistant?.main !== sid));
+    const notify = actions?.notify ?? toast;
     busyLockRef.current = true;
-    setBusyEpoch(capturedEpoch);
-    const targetSid = session.session_id;
-    const startedAt = location.href;
-    // A hub push can retire the old main and unmount the dialog before its HTTP response arrives.
-    const retiredByHub = () => !mountedRef.current && scope.current() && location.href === startedAt
-      && getState().assistant != null && getState().assistant?.main !== targetSid;
-    const markedManager = chosenManager() ?? "";
-    const customMarkCleared = depsRef.current?.markCleared;
-    const markCleared = customMarkCleared ?? ((sid: string) => markMainCleared(sid, markedManager));
-    const clearOwnMarked = () => {
-      if (!customMarkCleared) forgetMainClearedIf(targetSid, markedManager);
-    };
-    const forgetCleared = () => {
-      clearOwnMarked();
-      depsRef.current?.forgetCleared?.();
-    };
-    const startNewMain = depsRef.current?.startNewMain
-      ?? ((includeSummary: boolean, expect: string) => api<NewMainResult>(NEW_MAIN_PATH, { method: "POST", json: newMainBody(includeSummary, expect) }));
-    const refresh = depsRef.current?.refresh ?? (() => refreshAssistant().catch(() => {}));
-    const navigateMain = depsRef.current?.navigateMain ?? (() => navigate({ name: "persona" }));
-    const notify = depsRef.current?.notify ?? ((text: string, tone: "ok" | "error" | "info") => toast(text, tone));
-
-    // Keep the docked conversation layout across early hub pushes and refresh so the composer never jumps to the
-    // centered welcome screen and back when the next message starts the new main chat.
-    markCleared(targetSid);
-
-    // `refresh()` updates `assistant.main` in the store, which is expected to flip the caller's `isMain`
-    // state and unmount this dialog; once `startNewMain` has settled on the current epoch, only an ambient
-    // account/manager switch or an explicit scope change while still mounted should cancel navigation/toast.
-    const finishToMain = async (message: string, tone: "ok" | "info") => {
-      await refresh();
-      if (!scope.current() || location.href !== startedAt) {
-        clearOwnMarked();
-        return;
-      }
-      if (mountedRef.current && activeEpochRef.current !== capturedEpoch) {
-        clearOwnMarked();
-        return;
-      }
-      onCloseRef.current();
-      navigateMain();
-      onNavigateRef.current?.();
-      notify(message, tone);
-    };
-
+    setBusyEpoch(epoch);
     try {
-      const r = await startNewMain(carry, targetSid);
-      if (!isCurrent() && !retiredByHub()) {
-        if (!scope.current() || mountedRef.current) clearOwnMarked();
+      let outcome = retry?.outcome;
+      if (!outcome) {
+        (actions?.markCleared ?? markMainCleared)(sid);
+        try {
+          const r = actions?.startNewMain ? await actions.startNewMain(carry, sid)
+            : await api<NewMainResult>(NEW_MAIN_PATH, { method: "POST", json: newMainBody(carry, sid) });
+          outcome = { message: r.carried ? t("assistant-assistantchat.new_main_done_carried") : t("assistant-assistantchat.new_main_done"), tone: "ok" };
+        } catch (e) {
+          forget();
+          if (!(e instanceof ApiError && e.code === "main_changed")) {
+            if (currentView()) notify(t("assistant-assistantchat.new_main_failed", { error: errorText(e) }), "error");
+            return;
+          }
+          outcome = { message: t("assistant-assistantchat.new_main_elsewhere"), tone: "info" };
+        }
+      }
+      if (!currentView()) return;
+      try {
+        // A stale/coalesced read may lose to a newer read. Only announce success once the replacement is visible.
+        const updated = await (actions?.refresh ?? refreshAssistant)();
+        const assistant = getState().assistant;
+        if ((!actions?.refresh || updated === false) && (!assistant || assistant.main === sid)) {
+          throw new Error(t("chat-chatview.refresh_failed"));
+        }
+      } catch (e) {
+        if (currentView()) {
+          const error = t("personaassistant.load_failed", { error: errorText(e) });
+          if (mountedRef.current) setReadRetry({ epoch, outcome, error });
+          else notify(error, "error");
+        }
         return;
       }
-      await finishToMain(
-        r.carried ? t("assistant-assistantchat.new_main_done_carried") : t("assistant-assistantchat.new_main_done"),
-        "ok",
-      );
-    } catch (e) {
-      if (!isCurrent() && !retiredByHub()) {
-        clearOwnMarked();
-        return;
-      }
-      forgetCleared();
-      if (e instanceof ApiError && e.code === "main_changed") {
-        // Another device replaced it already: show what the hub has now.
-        await finishToMain(t("assistant-assistantchat.new_main_elsewhere"), "info");
-      } else {
-        notify(t("assistant-assistantchat.new_main_failed", { error: errorText(e) }), "error");
-      }
+      // The refresh itself can unmount the menu. It belongs to this request unless the user left its page or scope.
+      if (!scope.current() || !scope.samePage() || (mountedRef.current && activeEpochRef.current !== epoch)) return;
+      onCloseRef.current();
+      (actions?.navigateMain ?? (() => navigate({ name: "persona" })))();
+      onNavigateRef.current?.();
+      notify(outcome.message, outcome.tone);
     } finally {
+      release();
       scope.release();
-      if (activeEpochRef.current === capturedEpoch) {
+      if (activeEpochRef.current === epoch) {
         busyLockRef.current = false;
-        if (mountedRef.current) setBusyEpoch((cur) => (cur === capturedEpoch ? null : cur));
+        if (mountedRef.current) setBusyEpoch(null);
       }
     }
   };
@@ -175,17 +168,18 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
       footer={
         <>
           <Button tone="quiet" disabled={busy} onClick={onClose}>{t("common.cancel")}</Button>
-          <Button tone="primary" busy={busy} onClick={() => void go()}>{t("assistant-assistantchat.new_main")}</Button>
+          <Button tone="primary" busy={busy} disabled={changingMain} onClick={() => void go()}>{retry ? t("personaassistant.retry") : t("assistant-assistantchat.new_main")}</Button>
         </>
       }
     >
+      {retry && <p role="alert" className="text-danger">{retry.error}</p>}
       <p className="text-[13px] leading-relaxed text-ink-2">{t("assistant-assistantchat.new_main_body", { title: archivedMainTitle() })}</p>
       <div className="mt-3 flex items-start gap-3 rounded-control bg-inset px-3 py-2.5 shadow-hairline">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium text-ink">{t("assistant-assistantchat.carry_summary")}</div>
           <div className="mt-0.5 text-[12px] leading-relaxed text-ink-3">{t("assistant-assistantchat.carry_summary_hint")}</div>
         </div>
-        <Switch checked={carry} onChange={setCarry} label={t("assistant-assistantchat.carry_summary")} disabled={busy} />
+        <Switch checked={carry} onChange={setCarry} label={t("assistant-assistantchat.carry_summary")} disabled={busy || Boolean(retry)} />
       </div>
     </Dialog>
   );
