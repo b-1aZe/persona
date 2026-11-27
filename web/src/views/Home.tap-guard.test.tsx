@@ -3,6 +3,7 @@
 // a row that appears after the open-grace swallows an early pointer tap and answers once armed; keyboard clicks never
 // wait; replacing the card with one whose answers differ re-arms, while redrawing the same row does not.
 import { act } from "react";
+import serializedDialog from "../lib/testdata/terminal-approval.json";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -94,6 +95,17 @@ describe("the overview's quick-answer rows", () => {
     await tap(allow);
     await flush();
     expect(calls).toEqual([{ path: "/interactions/p1/resolve", body: { allow: true } }]);
+  });
+
+  it("offers review and sends one refusal for a serialized terminal request with no command field", async () => {
+    fake.interactions = [{ ...permission, kind: "screen", dialog: serializedDialog }];
+    await mount();
+    expect(findButton("Yes")).toBeUndefined();
+    expect(findButton("查看请求")).toBeTruthy();
+    expect(calls).toEqual([]);
+    await tap(findButton(serializedDialog.options[2].label));
+    await flush();
+    expect(calls).toEqual([{ path: "/interactions/p1/resolve", body: { option: "3" } }]);
   });
 
   it("swallows an early pointer tap on a row that appears later, then answers once armed", async () => {

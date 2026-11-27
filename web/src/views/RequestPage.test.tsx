@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setToken } from "../lib/api";
 import { getState, refresh, reset } from "../lib/store";
+import serializedEdit from "../lib/testdata/codex-file-approval.json";
 import { RequestPage } from "./RequestPage";
 import type { Interaction } from "../lib/types";
 import { loadPages } from "../lib/lazy-page";
@@ -116,17 +117,21 @@ it("keeps the switch reversible on this page when the browser refuses storage wr
 });
 
 it.each([
-  ["draft.txt", false], ["//shared/project/draft.txt", true],
-])("submits a file write once after the required approval for %s", async (path, external) => {
+  { title: "absolute local write", fields: { tool_name: "Write", tool_input: { file_path: "/project/draft.txt" } }, review: false },
+  { title: "shared write", fields: { tool_name: "Write", tool_input: { file_path: "//shared/project/draft.txt" } }, review: true },
+  { title: "relative write in a shared directory", fields: { tool_name: "Write", cwd: "//shared/project", tool_input: { file_path: "draft.txt" } }, review: true },
+  { title: "multi-file Codex edit", fields: serializedEdit, review: true },
+  { title: "multi-file edit with scopes omitted", fields: { ...serializedEdit, always_keys: undefined }, review: true },
+])("submits one approval for a $title", async ({ fields, review }) => {
   const { t } = await import("../i18n");
-  cards[0] = { ...cards[0], tool_name: "Write", tool_input: { file_path: path, content: "A draft" } };
+  cards[0] = { ...cards[0], ...fields };
   await refresh();
   act(() => root.render(<RequestPage id="script-request" onToggleSidebar={() => {}} />));
   await flush();
   const click = (key: string) => act(() => [...host.querySelectorAll("button")].find(b => b.textContent === t(key))!.click());
   click("chat-interactions.allow");
   await flush();
-  if (external) {
+  if (review) {
     expect(writes).toEqual([]);
     click("approval-impact.confirm");
     await flush();

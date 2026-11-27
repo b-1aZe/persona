@@ -11,8 +11,8 @@ export function useApprovalReview(ix: Interaction) {
   const enabled = useApprovalConfirmation();
   const impact = enabled ? approvalImpact(ix) : null;
   const [pending, setPending] = useState<{ key: string; choice: string } | null>(null);
-  const identity = () => JSON.stringify([ix.id, ix.created_at, cardTapKey(ix), ix.summary, ix.editable_text, ix.outward_write,
-    ix.approval_batch_id, ix.owner_approval_phrases, ix.dialog?.rev, ix.dialog?.command, ix.dialog?.options]);
+  const identity = () => JSON.stringify([ix.id, ix.created_at, cardTapKey(ix), ix.cwd, ix.always_keys, ix.summary, ix.editable_text, ix.outward_write,
+    ix.approval_batch_id, ix.owner_approval_phrases, ix.dialog?.rev, ix.dialog?.detail, ix.dialog?.command, ix.dialog?.options]);
   const choice = impact && pending && pending.key === identity() ? pending.choice : null;
   const request = (answer: string) => {
     if (!confirmationEnabled() || !approvalImpact(ix)) return false;

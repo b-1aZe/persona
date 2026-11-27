@@ -1,17 +1,25 @@
 // The web approval card describes the requested action. Only recognized local operations skip its extra step.
+import { isCommandPrompt } from "./command-ask";
 import type { Interaction } from "./types";
 
-export type ApprovalImpact = "push" | "publish" | "deploy" | "send" | "external" | "unknown";
+export type ApprovalImpact = "push" | "publish" | "deploy" | "remote_read" | "send" | "external" | "unknown";
 type Impact = ApprovalImpact | null;
 
 // Only paths with an unambiguous local spelling qualify for one-tap approval. File contents are not paths.
-function localPath(path: unknown): boolean {
+function localPath(path: unknown): path is string {
   if (typeof path !== "string" || !path.trim()) return false;
   const value = path.trim().replaceAll("\\", "/");
   return !value.startsWith("//") && (/^[a-z]:\//i.test(value) || !/^[^/]+:/.test(value));
 }
 
-function patchImpact(input: unknown): Impact {
+// Card cwd can be the conversation's starting directory. A relative file needs the operation's own directory.
+function localTarget(path: unknown, cwd: unknown): boolean {
+  if (!localPath(path)) return false;
+  const absolute = /^(?:\/|[a-z]:[\\/])/i;
+  return absolute.test(path) || (localPath(cwd) && absolute.test(cwd));
+}
+
+function patchImpact(input: unknown, cwd: unknown): Impact {
   if (typeof input !== "string") return "unknown";
   const lines = input.trim().split(/\r?\n/);
   if (lines.shift() !== "*** Begin Patch" || lines.pop() !== "*** End Patch") return "unknown";
@@ -19,7 +27,7 @@ function patchImpact(input: unknown): Impact {
   for (const line of lines) {
     if (!line.startsWith("*** ") || line === "*** End of File") continue;
     const path = /^\*\*\* (?:(?:Add|Delete|Update) File|Move to): (.+)$/.exec(line)?.[1];
-    if (!localPath(path)) return "unknown";
+    if (!localTarget(path, cwd)) return "unknown";
     files++;
   }
   return files ? null : "unknown";
@@ -48,8 +56,9 @@ function commandImpact([program, ...args]: string[]): Impact {
       (["npm", "pnpm", "yarn", "cargo"].includes(program) && verb === "publish") ||
       (program === "gh" && verb === "release" && action === "create")) return "publish";
   if ((["vercel", "netlify", "firebase", "wrangler"].includes(program) && verb === "deploy") ||
-      (program === "kubectl" && ["apply", "delete", "replace", "rollout", "set"].includes(verb)) ||
+      (program === "kubectl" && (["apply", "delete", "replace", "set"].includes(verb) || (verb === "rollout" && ["restart", "undo", "pause", "resume"].includes(action)))) ||
       (program === "terraform" && ["apply", "destroy"].includes(verb))) return "deploy";
+  if (program === "kubectl" && verb === "rollout" && ["status", "history"].includes(action)) return "remote_read";
   if (["mail", "mailx", "sendmail"].includes(program) ||
       (["gh", "glab"].includes(program) && ["issue", "pr", "mr"].includes(verb) && ["comment", "review", "create"].includes(action)) ||
       (program === "lark-cli" && verb === "im" && ["+send", "+reply"].includes(action))) return "send";
@@ -86,7 +95,11 @@ function shellImpact(source: string): Impact {
 }
 
 export function approvalImpact(ix: Interaction): Impact {
-  if (ix.kind === "screen" && ix.dialog?.command !== undefined) return typeof ix.dialog.command === "string" ? shellImpact(ix.dialog.command) : "unknown";
+  if (ix.kind === "screen" && isCommandPrompt(ix.dialog)) {
+    // The node reconstructs wrapped rows for display. They can explain a known effect, never prove locality.
+    const displayed = ix.dialog?.command;
+    return typeof displayed === "string" ? shellImpact(displayed) ?? "unknown" : "unknown";
+  }
   if (ix.kind !== "permission") return null;
   if (ix.editable_text !== undefined) return "send";
   if (ix.outward_write) return "external";
@@ -94,10 +107,21 @@ export function approvalImpact(ix: Interaction): Impact {
   const input = ix.tool_input;
   if (input?.workdir !== undefined && !localPath(input.workdir)) return "unknown";
   if (input?.cwd !== undefined && !localPath(input.cwd)) return "unknown";
-  if (["Read", "Write", "Edit", "MultiEdit"].includes(tool)) return localPath(input?.file_path) ? null : "unknown";
-  if (tool === "NotebookEdit") return localPath(input?.notebook_path) ? null : "unknown";
-  if (tool === "Grep" || tool === "Glob") return input?.path === undefined || localPath(input.path) ? null : "unknown";
-  if (tool === "apply_patch") return patchImpact(input?.input);
+  const cwd = input?.workdir ?? input?.cwd;
+  if (cwd === undefined && ix.cwd && !localPath(ix.cwd)) return "unknown";
+  if (tool === "Edit") {
+    // Codex sends just its first file in tool_input. The hub's remembered scopes can identify an external
+    // destination, but they aren't the edit payload and may be absent (or omit a move destination).
+    for (const key of ix.always_keys ?? []) {
+      const target = /^codex-(?:edit|root):(.+)$/.exec(key)?.[1];
+      if (target && !localPath(target)) return "external";
+    }
+    if (typeof input?.old_string !== "string" || typeof input.new_string !== "string") return "unknown";
+  }
+  if (["Read", "Write", "Edit", "MultiEdit"].includes(tool)) return localTarget(input?.file_path, cwd) ? null : "unknown";
+  if (tool === "NotebookEdit") return localTarget(input?.notebook_path, cwd) ? null : "unknown";
+  if (tool === "apply_patch") return patchImpact(input?.input, cwd);
+  if (tool === "Grep" || tool === "Glob") return localTarget(input?.path ?? ".", cwd) ? null : "unknown";
   if (["Bash", "exec_command", "shell"].includes(tool)) {
     if (input?.shell || input?.env) return "unknown";
     if (input?.cmd !== undefined && input.command !== undefined) return "unknown";
@@ -119,6 +143,10 @@ export function approvalImpact(ix: Interaction): Impact {
 
 /** The negative answer in a command prompt read from the terminal (its own option key must be sent verbatim). */
 export function declinesCommand(ix: Interaction, key: string): boolean {
-  // Exact terminal option labels, independent of the browser language. i18n-ignore
-  return ix.dialog?.options?.some(o => o.key === key && !o.kind && ["no", "deny", "decline", "否", "拒绝", "いいえ", "拒否"].includes(o.label.trim().toLowerCase())) ?? false;
+  const option = ix.dialog?.options?.find(o => o.key === key && !o.kind);
+  if (!option) return false;
+  const label = option.label.trim().toLowerCase();
+  // Short labels are terminal data. The longer forms are screen.ParseDialog and CodexOption.Role refusals.
+  return ["no", "deny", "decline", "否", "拒绝", "いいえ", "拒否", "no, exit"].includes(label) || // i18n-ignore
+    /^(?:no, and tell (?:claude|codex) what to do differently|no, (?:but )?continue without|cancel this request)\b/.test(label);
 }

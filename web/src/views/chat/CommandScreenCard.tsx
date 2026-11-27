@@ -17,7 +17,8 @@ import { declinesCommand } from "../../lib/approval-impact";
 import { RowConfirm } from "../settings/SettingsParts";
 import { ApprovalImpactLine, useApprovalReview } from "./ApprovalReview";
 import { DigitHint } from "./Choice";
-import { Card, CloseBlockedAgent, OptionLabel, resolve, useCardKeys } from "./Interactions";
+import { ScrollFold } from "./fold-scroll";
+import { Card, CloseBlockedAgent, DETAIL_FOLD, OptionLabel, resolve, useCardKeys } from "./Interactions";
 import { useChatCardTapGuard } from "./card-tap-guard";
 
 export interface CommandScreenCardProps {
@@ -103,7 +104,7 @@ function CommandScreenCardView({
   return (
     <Card
       kicker={t("chat-interactions.permission_kicker")}
-      title={t("chat-commandask.title", { agent: agentLabel({ agent: ix.agent, agent_label: ix.agent_label }) })}
+      title={(d?.command === undefined ? d?.question : undefined) || t("chat-commandask.title", { agent: agentLabel({ agent: ix.agent, agent_label: ix.agent_label }) })}
       cardKeys={keys}
       tapGuard={resolvedTapGuard}
       onDismiss={handleDismiss}
@@ -131,7 +132,7 @@ function CommandScreenCardView({
         ) : null}
       </div>}
     >
-      <CommandAskBody ask={ask} />
+      {!ask.command && d?.detail ? <ScrollFold className={DETAIL_FOLD} data-screen-detail>{d.detail}</ScrollFold> : <CommandAskBody ask={ask} />}
       <ApprovalImpactLine impact={review.impact} />
       {!pair && (
         <div className="flex flex-col gap-0.5">
