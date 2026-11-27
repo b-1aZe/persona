@@ -177,6 +177,14 @@ data class PanelRow(
     /** A model of a provider's list (also in Recommended), a favorite's copy, a recent setup, or "Use “…”" for a typed id. */
     enum class Kind { Model, Favorite, Recent, Typed }
 
+    enum class EffortEdit { ReadOnly, Live, Preference }
+
+    fun effortEdit(live: Boolean): EffortEdit = when {
+        model.sessionEffortOnly -> EffortEdit.ReadOnly
+        live -> EffortEdit.Live
+        else -> EffortEdit.Preference
+    }
+
     val reportsSessionEffort: Boolean get() = current && kind == Kind.Model && model.sessionEffortOnly
     val shownEffort: String get() = if (reportsSessionEffort) setup.effort.orEmpty() else ModelPanel.shownEffort(setup, model)
 }

@@ -36,6 +36,7 @@ class AgentModelPanelTest {
             val panel = AgentModelPanel.panel(session, launchers, { ModelList(read = true, list = list) }, emptySet())
             val provider = panel.providers.first()
             val model = provider.models!!.single()
+            assertTrue(model.sessionEffortOnly)
             val setup = ModelPanel.rowSetup(provider, model, panel.state, PanelOverride(effort = "low"))
             return PanelRow("current", PanelRow.Kind.Model, provider, model, setup, current = true).shownEffort
         }
