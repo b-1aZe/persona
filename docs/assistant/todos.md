@@ -757,7 +757,8 @@ A cancellation stays final whether the Agent receives a user message, an `agent_
 leader task. Once that top-level task is accepted or cancelled and every Agent under it has retired, the same close pass
 closes the exact workspace recorded for the task (`docs/integrations/engines.md` "Task workspaces"). Any shells left in
 that task-owned workspace go with it; the Git checkouts and transcripts stay. User-opened workspaces and other tasks'
-workspaces are never closed, and repeated close passes do nothing.
+workspaces are never closed, and repeated close passes do nothing. On Orca (#17051), the worktree stays open.
+The same pass closes individual stopped terminals whose creation records match that task and worktree.
 
 **Do not stop**: working, waiting for user (questions, plans, permissions, any dialog, pending cards), unknown engine state; queued messages, background shells, running sub-Agents, `/loop`, listening ports (development servers); linked to another unfinished to-do; assistant chats; sessions managed by other tools (external Codex app-server, runtime, daemon, pi) or by an engine that runs Agents without a terminal (Paseo, Cindy); not started by Persona (the user's own Agents are theirs to stop); Agents other than Claude Code, Codex and compatible Codex forks.
 node rejects these (`not_retirable`), assistant records them and does not ask again for 10 minutes if Agent unchanged (`taskCloseRetry`, then retries because node may have upgraded). Old nodes not recognizing `session.stop` are likewise treated as refusals, so nothing is closed while the hub is updated first; after the node upgrade, stopping resumes within at most 10 minutes. A node since #4754 answers an older hub's `session.retire` the same way: it stops the Agent and keeps its terminal.

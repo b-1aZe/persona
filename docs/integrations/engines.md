@@ -235,8 +235,8 @@ Selecting `herdr-both` attaches both herdr and herdr-core hosts:
 ## Task workspaces (#4786)
 
 On classic herdr a top-level task leader and its workers share one workspace named after the leader's task. This is
-placement and cleanup for that task only; ordinary tasks, Herdr App, Orca, Tern, Paseo and Cindy keep their existing
-workspace behavior.
+placement and cleanup for that task only. On Orca the leader and same-machine workers share tabs of the leader's
+worktree. Other engines and ordinary tasks keep their existing workspace behavior.
 
 - **Opening.** A leader's `session.start` carries `task_id` and `workspace_label`. With no recorded `workspace_id`, its
   first tab opens a new workspace under the task title instead of the directory's basename. The manager records the
@@ -259,6 +259,17 @@ workspace behavior.
   transfer ownership; matching only a label is never enough. Already-gone and repeated closes are idempotent.
   Closing the workspace closes any shells left in it after the Agents stopped; this task-owned exception does not
   change ordinary terminal retention. Git checkouts and transcripts stay.
+
+**Orca (#17051).** The leader opens a tab in its selected Orca worktree. Once the manager records its ID, each
+worker on that Orca opens a separate tab there. Read-only workers use their assigned directory. Writable workers
+enter their own checkout in their new shell. A node-prepared checkout keeps its planned path, and a worker that
+needs a Git worktree through `worktree.create` uses `open_workspace:false`. This groups the terminals even when
+the checkouts belong to different repositories. The existing Orca worktree keeps its name and other tabs.
+
+After the task is accepted or cancelled and its Agents have stopped, the node checks each terminal's original
+creation receipt, task ID, worktree ID and idle shell before closing that terminal by handle and incarnation.
+User-opened or adopted terminals have no creation receipt for the task. An older Orca that cannot provide the
+required evidence still opens the tab and leaves it open. Git worktrees, branches and conversation transcripts stay.
 
 ## Agents run in a terminal
 

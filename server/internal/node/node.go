@@ -3176,6 +3176,9 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		}
 		return map[string]any{"sent": true}, nil
 	case "workspace.close":
+		if p.Host == host.Orca {
+			return n.closeOrcaTaskSpace(ctx, p.TaskID, p.WorkspaceID)
+		}
 		return n.closeTaskSpace(ctx, p.TaskID, p.WorkspaceID)
 	case "assistant.cache_clear":
 		n.forgetCacheWarm(p.SessionID)

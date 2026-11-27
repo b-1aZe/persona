@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,7 @@ import (
 	"github.com/nwverse/persona/server/internal/rpc"
 )
 
-// Task workspaces (#4786). Only a top-level leader and its workers on classic herdr share one. The manager persists
+// Task workspaces (#4786). A top-level leader and its workers can share a classic herdr or Orca workspace. The manager persists
 // the intended label before dispatch and the node's actual workspace ID afterward. Other hosts and ordinary tasks keep
 // their existing directory/workspace placement and never acquire this lifecycle.
 
@@ -27,6 +28,7 @@ const (
 
 type taskSpace struct {
 	Machine string `json:"machine"`
+	Host    string `json:"host,omitempty"` // Empty on classic herdr records written before Orca grouping.
 	ID      string `json:"workspace_id,omitempty"`
 	Label   string `json:"label"`
 }
@@ -139,33 +141,35 @@ func taskSpaceLabel(title, id string) string {
 	return clip(oneLine(firstNonEmpty(strings.TrimSpace(title), id)), taskSpaceLabelMax)
 }
 
-func herdrTaskHost(m Device, params map[string]any) bool {
-	host, _ := params["host"].(string)
+func taskPlacementHost(m Device, host string) string {
 	if host == "" {
 		host = proto.EngineHostsOf(m.Engine).Default
 	}
-	return host == "" || host == proto.EngineHerdr
+	return cmp.Or(host, proto.EngineHerdr)
 }
 
 // withTaskSpaceStart attaches a leader/worker start and holds its task's placement lock through the start, adoption,
 // and response recording. A worker without a recorded leader workspace keeps the old placement (for example, a leader
-// that predates this change); non-herdr leaders never lose their explicit workspace_id.
+// that predates this change). Orca uses the leader's actual worktree as the group.
 func (s *Service) withTaskSpaceStart(ctx context.Context, t PlanTask, m Device, params map[string]any) (context.Context, func(), error) {
 	root := taskSpaceRoot(t)
-	if t.backendWorkspace() || root == "" || !herdrTaskHost(m, params) {
+	requested, _ := params["host"].(string)
+	host := taskPlacementHost(m, requested)
+	if t.backendWorkspace() || root == "" || host != proto.EngineHerdr && host != proto.EngineOrca {
 		return ctx, func() {}, nil
 	}
 	unlock := s.lockTaskSpace(root)
 	space, ok := s.taskSpaceOf(ctx, root)
+	sameHost := ok && s.canonical(space.Machine) == s.canonical(m.ID) && cmp.Or(space.Host, proto.EngineHerdr) == host
 	if t.Role == roleLeader && t.Parent == "" {
-		if !ok || s.canonical(space.Machine) != s.canonical(m.ID) {
-			space = taskSpace{Machine: s.canonical(m.ID), Label: taskSpaceLabel(t.Title, root)}
+		if !sameHost {
+			space = taskSpace{Machine: s.canonical(m.ID), Host: host, Label: taskSpaceLabel(t.Title, root)}
 			if err := s.putTaskSpace(ctx, root, space); err != nil {
 				unlock()
 				return ctx, func() {}, err
 			}
 		}
-	} else if !ok || s.canonical(space.Machine) != s.canonical(m.ID) {
+	} else if !sameHost || host == proto.EngineOrca && space.ID == "" {
 		unlock()
 		return ctx, func() {}, nil
 	}
@@ -174,28 +178,36 @@ func (s *Service) withTaskSpaceStart(ctx context.Context, t PlanTask, m Device, 
 	delete(params, "reopen_worktree_workspace")
 	if space.ID != "" {
 		params["workspace_id"] = space.ID
-	} else {
+	} else if host == proto.EngineHerdr {
 		delete(params, "workspace_id")
 	}
 	return context.WithValue(ctx, taskSpaceCallKey{}, taskSpaceCall{root: root, held: true}), unlock, nil
 }
 
-// taskCheckoutOnly reports whether a new task checkout must not open a workspace of its own. A herdr leader and a
-// worker with a recorded leader workspace use the shared task workspace; all other tasks retain worktree.create's UI.
-func (s *Service) taskCheckoutOnly(ctx context.Context, t PlanTask) bool {
+// taskCheckoutHost selects checkout-only creation for a classic herdr task or a worker in a recorded Orca group.
+// An Orca leader keeps its normal workspace creation so its worktree can host the group's tabs.
+func (s *Service) taskCheckoutHost(ctx context.Context, t PlanTask) string {
 	root := taskSpaceRoot(t)
 	if root == "" {
-		return false
+		return ""
 	}
 	m, ok := s.machineByName(ctx, t.Machine)
-	if !ok || !herdrTaskHost(m, nil) {
-		return false
+	if !ok {
+		return ""
 	}
+	host := taskPlacementHost(m, t.Host)
 	if t.Role == roleLeader && t.Parent == "" {
-		return true
+		if host == proto.EngineHerdr {
+			return host
+		}
+		return ""
 	}
 	space, ok := s.taskSpaceOf(ctx, root)
-	return ok && s.canonical(space.Machine) == s.canonical(t.Machine)
+	if ok && s.canonical(space.Machine) == s.canonical(t.Machine) && cmp.Or(space.Host, proto.EngineHerdr) == host &&
+		(host == proto.EngineHerdr || host == proto.EngineOrca && space.ID != "") {
+		return host
+	}
+	return ""
 }
 
 func taskSpaceRootFromContext(ctx context.Context) (string, bool) {
@@ -270,6 +282,9 @@ func (s *Service) noteTaskSpaceResult(ctx context.Context, root, machine string,
 	space, _ := s.taskSpaceOf(ctx, root)
 	space.Machine = s.canonical(machine)
 	if reply.TaskWorkspace != nil {
+		if reply.TaskWorkspace.TaskID != root {
+			return
+		}
 		space.ID = reply.TaskWorkspace.WorkspaceID
 		if reply.TaskWorkspace.Label != "" {
 			space.Label = reply.TaskWorkspace.Label
@@ -390,7 +405,7 @@ func (s *Service) taskSpaceBusy(root, workspace string, lists map[string][]proto
 		return true
 	}
 	for key, row := range rows {
-		if row.WorkspaceID == workspace && row.PaneID != "" && row.Status != proto.StatusOffline && !retired[key] {
+		if workspace != "" && row.WorkspaceID == workspace && row.PaneID != "" && row.Status != proto.StatusOffline && !retired[key] {
 			return true
 		}
 	}
@@ -445,7 +460,12 @@ nextTask:
 			}
 			lists[machineID] = got
 		}
-		if s.taskSpaceBusy(root, space.ID, lists, seen) {
+		// Orca closes individual terminals, so an unrelated Agent in the same worktree can stay live.
+		wholeWorkspace := space.ID
+		if space.Host == proto.EngineOrca {
+			wholeWorkspace = ""
+		}
+		if s.taskSpaceBusy(root, wholeWorkspace, lists, seen) {
 			unlock()
 			continue
 		}
@@ -459,7 +479,11 @@ func (s *Service) closeTaskSpace(ctx context.Context, root string, space taskSpa
 		Closed bool `json:"closed"`
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	err := s.call(callCtx, space.Machine, deviceWorkspaceClose, map[string]any{"task_id": root, "workspace_id": space.ID}, &result)
+	params := map[string]any{"task_id": root, "workspace_id": space.ID}
+	if space.Host == proto.EngineOrca {
+		params["host"] = space.Host
+	}
+	err := s.call(callCtx, space.Machine, deviceWorkspaceClose, params, &result)
 	cancel()
 	var rpcErr *rpc.Error
 	switch {

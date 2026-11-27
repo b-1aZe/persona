@@ -670,7 +670,7 @@ func (s *Service) newTaskWorktree(ctx context.Context, t *PlanTask) (proto.Workt
 	if wt, reused, err := s.findTaskWorktree(ctx, t); reused || err != nil {
 		return wt, reused, err
 	}
-	wt, err := s.newWorktreeForTask(ctx, t.Machine, t.Cwd, t.WorkspaceResolved.Branch, s.taskCheckoutOnly(ctx, *t))
+	wt, err := s.newWorktreeOn(ctx, t.Machine, t.Cwd, t.WorkspaceResolved.Branch, s.taskCheckoutHost(ctx, *t))
 	if t.Workspace.Branch == "" && err != nil {
 		if path, taken := pathTaken(err); taken {
 			return wt, false, taskCheckoutRefusal{i18n.ErrEnglish("assistant-tasks_workspace.own_path_taken",
