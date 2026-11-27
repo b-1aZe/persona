@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
 )
@@ -169,9 +170,25 @@ func (s *Service) withTaskSpaceStart(ctx context.Context, t PlanTask, m Device, 
 				return ctx, func() {}, err
 			}
 		}
-	} else if !sameHost || host == proto.EngineOrca && space.ID == "" {
+	} else if !sameHost {
 		unlock()
 		return ctx, func() {}, nil
+	}
+	if t.Parent != "" && host == proto.EngineOrca && space.ID == "" {
+		// A lost start reply can be adopted before a session-list notification fills the record.
+		// Only the linked leader's node receipt can establish placement for the first worker.
+		worker, _ := s.todoNow(t.TodoID)
+		if leader, _, ok := s.leaderSupervisor(worker); ok && s.canonical(leader.MachineID) == space.Machine {
+			space.ID = s.recordedTaskWorkspace(ctx, space.Machine, leader.SessionID, root)
+		}
+		if space.ID == "" {
+			unlock()
+			return ctx, func() {}, i18n.ErrEnglish("assistant-tasks_workspace.leader_placement_pending")
+		}
+		if err := s.putTaskSpace(ctx, root, space); err != nil {
+			unlock()
+			return ctx, func() {}, err
+		}
 	}
 	params["task_id"] = root
 	params["workspace_label"] = space.Label
@@ -184,30 +201,36 @@ func (s *Service) withTaskSpaceStart(ctx context.Context, t PlanTask, m Device, 
 	return context.WithValue(ctx, taskSpaceCallKey{}, taskSpaceCall{root: root, held: true}), unlock, nil
 }
 
-// taskCheckoutHost selects checkout-only creation for a classic herdr task or a worker in a recorded Orca group.
-// An Orca leader keeps its normal workspace creation so its worktree can host the group's tabs.
-func (s *Service) taskCheckoutHost(ctx context.Context, t PlanTask) string {
-	root := taskSpaceRoot(t)
+// taskWorktreeKind preserves an explicit engine and lets workers on the leader's machine
+// inherit its Orca worktree, even when that machine defaults to a different engine.
+func (s *Service) taskWorktreeKind(ctx context.Context, t *PlanTask) string {
+	if (t.Role == roleLeader || t.Parent != "") && (t.Host == proto.EngineOrca || t.Host == proto.EngineHerdr) {
+		return t.Host
+	}
+	if t.Parent != "" && t.Host == "" && !t.backendWorkspace() {
+		if space, ok := s.taskSpaceOf(ctx, t.Parent); ok && space.Host == proto.EngineOrca && space.Machine == s.canonical(t.Machine) {
+			return space.Host
+		}
+	}
+	return ""
+}
+
+func (s *Service) taskCheckoutOnly(ctx context.Context, t *PlanTask, kind string) bool {
+	root := taskSpaceRoot(*t)
 	if root == "" {
-		return ""
+		return false
 	}
 	m, ok := s.machineByName(ctx, t.Machine)
 	if !ok {
-		return ""
+		return false
 	}
-	host := taskPlacementHost(m, t.Host)
+	host := taskPlacementHost(m, cmp.Or(kind, t.Host))
 	if t.Role == roleLeader && t.Parent == "" {
-		if host == proto.EngineHerdr {
-			return host
-		}
-		return ""
+		return host == proto.EngineHerdr
 	}
 	space, ok := s.taskSpaceOf(ctx, root)
-	if ok && s.canonical(space.Machine) == s.canonical(t.Machine) && cmp.Or(space.Host, proto.EngineHerdr) == host &&
-		(host == proto.EngineHerdr || host == proto.EngineOrca && space.ID != "") {
-		return host
-	}
-	return ""
+	return ok && space.Machine == s.canonical(t.Machine) && cmp.Or(space.Host, proto.EngineHerdr) == host &&
+		(host == proto.EngineHerdr || host == proto.EngineOrca)
 }
 
 func taskSpaceRootFromContext(ctx context.Context) (string, bool) {
@@ -276,6 +299,18 @@ func (s *Service) attachTaskSpaceResume(ctx context.Context, machine, method str
 	return root
 }
 
+// recordedTaskWorkspace reads the node's durable assignment, which can differ from a moved terminal's current location.
+func (s *Service) recordedTaskWorkspace(ctx context.Context, machine, session, root string) string {
+	var info struct {
+		TaskID      string `json:"task_id"`
+		WorkspaceID string `json:"task_workspace_id"`
+	}
+	if err := s.call(ctx, machine, "session.info", map[string]any{"session_id": session}, &info); err != nil || info.TaskID != root {
+		return ""
+	}
+	return info.WorkspaceID
+}
+
 func (s *Service) noteTaskSpaceResult(ctx context.Context, root, machine string, raw json.RawMessage) {
 	if root == "" || len(raw) == 0 {
 		return
@@ -296,15 +331,7 @@ func (s *Service) noteTaskSpaceResult(ctx context.Context, root, machine string,
 		}
 	} else {
 		space.ID = reply.Session.WorkspaceID
-		var ownership struct {
-			TaskID          string `json:"task_id"`
-			TaskWorkspaceID string `json:"task_workspace_id"`
-		}
-		if space.ID == "" {
-			return
-		}
-		if err := s.call(ctx, machine, "session.info", map[string]any{"session_id": reply.Session.SessionID}, &ownership); err != nil ||
-			ownership.TaskID != root || ownership.TaskWorkspaceID != space.ID {
+		if space.ID == "" || s.recordedTaskWorkspace(ctx, machine, reply.Session.SessionID, root) != space.ID {
 			return // a kept shell's current user workspace is not the task's recorded workspace
 		}
 	}
@@ -331,12 +358,7 @@ func (s *Service) taskSpacesSessionsChanged(ctx context.Context, d DeviceSession
 		if space.ID != "" && (session.PaneID == "" || session.Status == proto.StatusOffline) {
 			continue // an old stopped row cannot move a newer placement back to an earlier workspace
 		}
-		var ownership struct {
-			TaskID          string `json:"task_id"`
-			TaskWorkspaceID string `json:"task_workspace_id"`
-		}
-		if err := s.call(ctx, d.MachineID, "session.info", map[string]any{"session_id": session.SessionID}, &ownership); err != nil ||
-			ownership.TaskID != root || ownership.TaskWorkspaceID != session.WorkspaceID {
+		if s.recordedTaskWorkspace(ctx, d.MachineID, session.SessionID, root) != session.WorkspaceID {
 			continue // a moved live row is not proof that the task owns its new user workspace
 		}
 		space.ID = session.WorkspaceID

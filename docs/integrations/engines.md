@@ -260,8 +260,9 @@ worktree. Other engines and ordinary tasks keep their existing workspace behavio
   Closing the workspace closes any shells left in it after the Agents stopped; this task-owned exception does not
   change ordinary terminal retention. Git checkouts and transcripts stay.
 
-**Orca (#17051).** The leader opens a tab in its selected Orca worktree. Once the manager records its ID, each
-worker on that Orca opens a separate tab there. Read-only workers use their assigned directory. Writable workers
+**Orca (#17051).** The leader opens a tab in its selected Orca worktree. Each same-machine worker opens a separate tab there. If the start reply
+omitted the placement, the manager confirms the linked leader's task and worktree IDs with the node before starting
+the first worker. Read-only workers use their assigned directory. Writable workers
 enter their own checkout in their new shell. A node-prepared checkout keeps its planned path, and a worker that
 needs a Git worktree through `worktree.create` uses `open_workspace:false`. This groups the terminals even when
 the checkouts belong to different repositories. The existing Orca worktree keeps its name and other tabs.
