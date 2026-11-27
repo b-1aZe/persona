@@ -270,8 +270,12 @@ private fun ModelRow(
     val palette = PersonaTheme.palette
     val off = block != null || picking
     val name = if (row.kind == PanelRow.Kind.Typed) stringResource(R.string.designsystem_modelpanel_use_typed, row.model.id) else row.model.name
-    val effort = row.model.efforts.takeIf { it.isNotEmpty() }?.let { ModelPanel.shownEffort(row.setup, row.model) }?.takeIf(String::isNotEmpty)
-    val setupWords = listOfNotNull(words.engine(row.provider.engine), effort?.let(words.effort)).joinToString(" · ")
+    val effort = when {
+        row.reportsSessionEffort && row.shownEffort.isEmpty() -> stringResource(R.string.designsystem_status_unknown)
+        row.reportsSessionEffort || row.model.efforts.isNotEmpty() -> row.shownEffort.takeIf(String::isNotEmpty)?.let(words.effort)
+        else -> null
+    }
+    val setupWords = listOfNotNull(words.engine(row.provider.engine), effort).joinToString(" · ")
     Row(Modifier.fillMaxWidth().padding(horizontal = Tokens.Space.xs).clip(RoundedCornerShape(Tokens.Radius.control))
         .then(if (row.current) Modifier.background(palette.surfaceStrong) else Modifier)
         .clickable(enabled = !off, role = Role.Button, onClick = onPick)
@@ -288,7 +292,7 @@ private fun ModelRow(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
             modifier = Modifier.semantics { contentDescription = setupWords }) {
             words.mark(row.provider.engine)?.let { JAgentMark(it, size = Tokens.Size.markXS) }
-            effort?.let { Text(words.effort(it), style = PersonaTheme.type.micro, color = palette.ink3, maxLines = 1, softWrap = false) }
+            effort?.let { Text(it, style = PersonaTheme.type.micro, color = palette.ink3, maxLines = 1, softWrap = false) }
         }
         if (row.kind != PanelRow.Kind.Typed) JIconButton(PhIcons.Star,
             stringResource(if (starred) R.string.designsystem_modelpanel_remove_favorite else R.string.designsystem_modelpanel_save_favorite),
@@ -314,7 +318,7 @@ private fun SetupPage(
     val palette = PersonaTheme.palette
     val model: PanelModel = row.model
     val override = prefs.overrides[PanelPrefs.overrideKey(row.provider.id, model.id)]
-    val shown = ModelPanel.shownEffort(row.setup, model)
+    val shown = row.shownEffort
     Column(Modifier.padding(horizontal = pagePadding).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             JIconButton(PhIcons.CaretLeft, stringResource(R.string.designsystem_back), onBack)
@@ -326,17 +330,21 @@ private fun SetupPage(
             Text(listOf(row.provider.name, words.engine(row.provider.engine)).joinToString(" · "), style = PersonaTheme.type.caption, color = palette.ink2)
         }
         if (model.efforts.isNotEmpty()) {
-            val index = model.efforts.indexOf(shown).coerceAtLeast(0)
-            Text(stringResource(R.string.designsystem_modelpanel_effort) + " · " + words.effort(model.efforts[index]) +
-                (if (model.efforts[index] == model.defaultEffort) " · " + stringResource(R.string.designsystem_modelpanel_recommended) else ""),
+            val unlisted = row.reportsSessionEffort && shown !in model.efforts
+            val first = if (unlisted) -1 else 0
+            val index = model.efforts.indexOf(shown).coerceAtLeast(first)
+            val label = if (index >= 0) words.effort(model.efforts[index]) else if (shown.isNotEmpty()) words.effort(shown)
+                else stringResource(R.string.designsystem_status_unknown)
+            Text(stringResource(R.string.designsystem_modelpanel_effort) + " · " + label +
+                (if (index >= 0 && model.efforts[index] == model.defaultEffort) " · " + stringResource(R.string.designsystem_modelpanel_recommended) else ""),
                 style = PersonaTheme.type.callout, color = palette.ink)
-            if (model.efforts.size > 1) {
+            if (model.efforts.lastIndex > first) {
                 JSlider(index.toFloat(), { value ->
-                    val effort = model.efforts[value.toInt().coerceIn(0, model.efforts.lastIndex)]
+                    val effort = model.efforts.getOrNull(value.toInt()) ?: return@JSlider
                     if (effort == shown) return@JSlider
                     if (live) onApplyCurrent?.invoke(effort)
                     else onPrefs(prefs.setOverride(row.provider.id, model.id, PanelOverride(effort = effort)))
-                }, valueRange = 0f..model.efforts.lastIndex.toFloat(), step = 1f,
+                }, valueRange = first.toFloat()..model.efforts.lastIndex.toFloat(), step = 1f,
                     contentDescription = stringResource(R.string.designsystem_modelpanel_effort))
                 Row {
                     Text(stringResource(R.string.designsystem_modelpanel_faster), Modifier.weight(1f), style = PersonaTheme.type.micro, color = palette.ink3)
