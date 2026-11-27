@@ -6,9 +6,9 @@
 import { useSyncExternalStore } from "react";
 import { t } from "../i18n";
 import { toast } from "../ui/atoms";
-import { api, ApiError, errorText } from "./api";
+import { api, ApiError, credentialOwner, errorText, onCredentialChange } from "./api";
 import type { ComposerCommand } from "./extension-prompts";
-import { chosenManager } from "./manager-choice";
+import { chosenManager, onManagerChoice } from "./manager-choice";
 import { navigate } from "./router";
 import { getState, refreshAssistant, subscribe } from "./store";
 
@@ -52,8 +52,18 @@ function setCleared(next: { manager: string; sid: string }) {
   listeners.forEach((l) => l());
 }
 
+/** Keeps the docked conversation layout while this tab clears or replaces main conversation `sid`. */
+export function markMainCleared(sid: string, manager = currentManager()) {
+  setCleared({ manager, sid });
+}
+
 export function forgetMainCleared() {
   setCleared(NONE);
+}
+
+/** Forgets the docked cleared state only when it still matches `(sid, manager)` marked by the caller. */
+export function forgetMainClearedIf(sid: string, manager = currentManager()) {
+  if (cleared.manager === manager && cleared.sid === sid) forgetMainCleared();
 }
 
 /** Whether this tab cleared the main conversation of `manager` (the one chosen now by default) and none started since. */
@@ -80,6 +90,10 @@ export interface ClearDeps {
   /** To the main conversation's page (a conversation's own address showed the old one). */
   home: () => void;
   toast: (text: string, tone: "error" | "info") => void;
+  /** Optional hook invoked right after `home()` (e.g. closing the mobile sidebar drawer). */
+  afterHome?: () => void;
+  /** Optional scope check for tests or controlled callers; defaults to tracking manager & credential scope. */
+  isScopeCurrent?: () => boolean;
 }
 
 const defaultDeps: ClearDeps = {
@@ -90,34 +104,99 @@ const defaultDeps: ClearDeps = {
 };
 
 const inFlight = new Set<string>();
+const busyListeners = new Set<() => void>();
+/** Capture the account and manager for one request, including switches away and back while it is pending. */
+export function mainActionScope() {
+  let changed = false;
+  const owner = safeCredentialOwner();
+  const invalidate = () => { changed = true; };
+  const offManager = onManagerChoice(invalidate);
+  const offOwner = onCredentialChange(invalidate);
+  return {
+    current: () => !changed && safeCredentialOwner() === owner,
+    release: () => { offManager(); offOwner(); },
+  };
+}
+
+function notifyBusy() {
+  busyListeners.forEach((l) => l());
+}
+
+/** Whether a clear-main request is currently in flight (for `sid` when provided, or any main chat). */
+export function isMainClearing(sid?: string): boolean {
+  return sid ? inFlight.has(sid) : inFlight.size > 0;
+}
+
+export function useMainClearing(sid?: string): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      busyListeners.add(l);
+      return () => busyListeners.delete(l);
+    },
+    () => isMainClearing(sid),
+    () => isMainClearing(sid),
+  );
+}
+
+function safeCredentialOwner(): string {
+  try {
+    return typeof localStorage === "undefined" ? "" : credentialOwner();
+  } catch {
+    return "";
+  }
+}
 
 /** Clears the main conversation sid (the one this device shows; another device's change since is refused, then shown).
  *  True when it is done or another one shows now, so the /clear typed is used up; false when it failed (a toast says
  *  why), so it goes back into the box. A second clear of the same one while the first is on its way does nothing. */
-export async function clearMainContext(sid: string, deps: ClearDeps = defaultDeps): Promise<boolean> {
+export async function clearMainContext(sid: string, overrides: Partial<ClearDeps> = {}): Promise<boolean> {
   if (inFlight.has(sid)) return true;
+  const deps = { ...defaultDeps, ...overrides };
+  const scope = mainActionScope();
   inFlight.add(sid);
-  // before the request: the hub's push of the change can come before its answer, and the page must not show the
-  // centered start page in between
-  setCleared({ manager: currentManager(), sid });
+  notifyBusy();
   try {
-    await deps.post(sid);
-    // (the refresh also drops the old conversation's cached first page: it is no longer the main one's)
-    await deps.refresh();
-    deps.home();
-    return true;
-  } catch (e) {
-    forgetMainCleared();
-    if (e instanceof ApiError && e.code === "main_changed") {
-      // another device replaced or cleared it: show what the hub has now
+    const startedManager = currentManager();
+    const stillCurrent = () => scope.current() && (deps.isScopeCurrent?.() ?? true);
+    const clearOwnMarked = () => {
+      forgetMainClearedIf(sid, startedManager);
+    };
+    // before the request: the hub's push of the change can come before its answer, and the page must not show the
+    // centered start page in between
+    setCleared({ manager: startedManager, sid });
+    try {
+      await deps.post(sid);
+      if (!stillCurrent()) {
+        clearOwnMarked();
+        return true;
+      }
+      // (the refresh also drops the old conversation's cached first page: it is no longer the main one's)
       await deps.refresh();
+      if (!stillCurrent()) {
+        clearOwnMarked();
+        return true;
+      }
       deps.home();
-      deps.toast(t("assistant-assistantchat.new_main_elsewhere"), "info");
+      deps.afterHome?.();
       return true;
+    } catch (e) {
+      clearOwnMarked();
+      if (!stillCurrent()) return false;
+      if (e instanceof ApiError && e.code === "main_changed") {
+        // another device replaced or cleared it: show what the hub has now
+        await deps.refresh();
+        if (!stillCurrent()) return true;
+        deps.home();
+        deps.afterHome?.();
+        deps.toast(t("assistant-assistantchat.new_main_elsewhere"), "info");
+        return true;
+      }
+      deps.toast(t("assistant-assistantchat.clear_failed", { error: errorText(e) }), "error");
+      return false;
     }
-    deps.toast(t("assistant-assistantchat.clear_failed", { error: errorText(e) }), "error");
-    return false;
   } finally {
+    scope.release();
     inFlight.delete(sid);
+    notifyBusy();
   }
 }
