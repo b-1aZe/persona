@@ -31,6 +31,7 @@ import {
   type CalendarMode,
   type DuePatch,
 } from "../lib/todo-calendar";
+import { downloadDeadlines } from "../lib/todo-calendar-export";
 import { TODO_STATUS_INFO, type SessionLookup, type Todo } from "../lib/todos";
 import { PHONE, useMedia } from "../lib/viewport";
 import { Button, cx, useNow } from "../ui/atoms";
@@ -647,6 +648,9 @@ export function TodoCalendar({
             {t("todos.calendar_show_done")}
           </label>
         </div>
+        <Button icon="download" className="touch-hit" disabled={!entries.length} onClick={() => downloadDeadlines(entries, from)}>
+          {t("todos.calendar_download")}
+        </Button>
       </div>
       <div className="mx-3 min-h-0 flex-1 overflow-hidden rounded-card bg-surface shadow-card sm:mx-6">
         {shown === "month" ? (
