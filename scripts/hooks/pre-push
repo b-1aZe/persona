@@ -29,12 +29,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   esac
   from=""
   unrelated=""
-  # A personal mirror already inherits the public upstream commit. Scan the
-  # fork's additions against that commit, including its merge result.
+  # A personal mirror already inherits public upstream main commits, also when it
+  # pins one older than the tip. Scan the fork's additions against the newest
+  # upstream main commit it contains, including its merge result.
   mirror_base=()
   if [ "$remote_ref" = refs/heads/personal ] && [ "$local_ref" = refs/heads/personal ] &&
-     git merge-base --is-ancestor refs/remotes/upstream/main "$local_sha" 2>/dev/null; then
-    mirror_base=(refs/remotes/upstream/main)
+     upstream_base="$(git merge-base refs/remotes/upstream/main "$local_sha" 2>/dev/null)"; then
+    mirror_base=("$upstream_base")
   fi
   for ref in ${mirror_base[@]+"${mirror_base[@]}"} refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master "$remote_sha"; do
     sha="$(git rev-parse --verify -q "$ref^{commit}")" || continue
