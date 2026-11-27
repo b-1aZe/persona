@@ -148,15 +148,29 @@ describe("a command's permission prompt", () => {
   });
 });
 
-it("confirms a terminal push and sends only the terminal's chosen option", async () => {
+it.each([["git push", "push"], ["", "unknown"], ["   ", "unknown"]])("confirms a terminal command (%s) and sends its chosen option once", async (command, impact) => {
   const ix = card(104);
-  ix.dialog = { ...ix.dialog, command: "git push" };
+  ix.dialog = { ...ix.dialog, command };
   await act(async () => root.render(<InteractionCard ix={ix} />));
   await body();
-  expect(host.textContent).toContain(t("approval-impact.push"));
+  expect(host.textContent).toContain(t(`approval-impact.${impact}`));
   act(() => button(t("chat-interactions.allow")).click());
   expect(calls).toEqual([]);
   act(() => button(t("approval-impact.confirm")).click());
   await flush();
   expect(calls.map(call => call.body)).toEqual([{ option: "1" }]);
+});
+
+it.each(["Deny", "拒绝", "拒否"])("sends a terminal refusal (%s) directly from the card and offers it in Overview", async label => {
+  const { quickAnswers } = await import("../../lib/quick-answers");
+  const ix = card(104);
+  ix.dialog = { command: "", options: [{ key: "yes", label: "Yes" }, { key: "stop", label }] };
+  expect(quickAnswers(ix)?.map(choice => choice.body)).toEqual([{ option: "stop" }]);
+  await act(async () => root.render(<InteractionCard ix={ix} />));
+  await body();
+  const deny = [...host.querySelectorAll("button")].find(b => b.textContent?.includes(label))!;
+  act(() => deny.click());
+  await flush();
+  expect(calls.map(c => c.body)).toEqual([{ option: "stop" }]);
+  expect(button(t("approval-impact.confirm"))).toBeUndefined();
 });

@@ -20,7 +20,7 @@ export interface CommandAsk {
 /** The command prompt of a screen card's dialog; null for any other dialog, and from a hub before #5265. */
 export function commandAsk(d: ScreenDialog | undefined): CommandAsk | null {
   const command = d?.command?.trim();
-  if (!d || !command) return null;
+  if (!d || command === undefined) return null;
   const at = d.deadline_at ? Date.parse(d.deadline_at) : NaN;
   return {
     command,

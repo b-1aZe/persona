@@ -7,5 +7,7 @@
   "confirm": "Confirm approval",
   "approvals": "Approvals",
   "setting": "Confirm actions that affect others",
-  "hint": "In this browser, ask again before sharing code, publishing changes or sending messages, or when the effect is unclear."
+  "hint": "In this browser, ask again before sharing code, publishing changes or sending messages, or when the effect is unclear.",
+  "deploy": "This changes a shared environment and may affect people using it.",
+  "external": "This changes something outside this computer on your behalf."
 }

@@ -97,3 +97,39 @@ it("can cancel, opt out and restore confirmation for the same outward request", 
     act(() => setConfirmationEnabled(true));
   }
 });
+
+it("keeps the switch reversible on this page when the browser refuses storage writes", async () => {
+  const { confirmationEnabled, setConfirmationEnabled } = await import("../lib/approval-confirmation");
+  const refuse = () => { throw new DOMException("Unavailable", "SecurityError"); };
+  const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(refuse);
+  const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(refuse);
+  try {
+    setConfirmationEnabled(false);
+    expect(confirmationEnabled()).toBe(false);
+    setConfirmationEnabled(true);
+    expect(confirmationEnabled()).toBe(true);
+  } finally {
+    set.mockRestore();
+    remove.mockRestore();
+    setConfirmationEnabled(true);
+  }
+});
+
+it.each([
+  ["draft.txt", false], ["//shared/project/draft.txt", true],
+])("submits a file write once after the required approval for %s", async (path, external) => {
+  const { t } = await import("../i18n");
+  cards[0] = { ...cards[0], tool_name: "Write", tool_input: { file_path: path, content: "A draft" } };
+  await refresh();
+  act(() => root.render(<RequestPage id="script-request" onToggleSidebar={() => {}} />));
+  await flush();
+  const click = (key: string) => act(() => [...host.querySelectorAll("button")].find(b => b.textContent === t(key))!.click());
+  click("chat-interactions.allow");
+  await flush();
+  if (external) {
+    expect(writes).toEqual([]);
+    click("approval-impact.confirm");
+    await flush();
+  }
+  expect(writes).toEqual([{ url: "/api/v1/interactions/script-request/resolve", body: { allow: true } }]);
+});
