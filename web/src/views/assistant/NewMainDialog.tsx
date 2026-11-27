@@ -7,7 +7,7 @@ import { chosenManager } from "../../lib/manager-choice";
 import { navigate } from "../../lib/router";
 import { getState, hubHas, refreshAssistant } from "../../lib/store";
 import type { Session } from "../../lib/types";
-import { Button, Dialog, toast } from "../../ui/atoms";
+import { Button, Dialog, toast, type ToastAction } from "../../ui/atoms";
 import { Switch } from "./parts";
 
 export interface NewMainResult {
@@ -21,7 +21,7 @@ export interface NewMainDialogDeps {
   startNewMain?: (carry: boolean, expect: string) => Promise<NewMainResult>;
   refresh?: () => Promise<unknown>;
   navigateMain?: () => void;
-  notify?: (text: string, tone: "ok" | "error" | "info") => void;
+  notify?: (text: string, tone: "ok" | "error" | "info", action?: ToastAction) => void;
   markCleared?: (sid: string) => void;
   forgetCleared?: () => void;
   scopeKey?: string;
@@ -60,6 +60,7 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
   const openRef = useRef(open);
   const activeEpochRef = useRef(effectiveEpoch);
   const busyLockRef = useRef(false);
+  const offerDetachedRetry = useRef<(() => void) | null>(null);
   const onCloseRef = useRef(onClose);
   const onNavigateRef = useRef(onNavigate);
   const depsRef = useRef(deps);
@@ -77,6 +78,8 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
     return () => {
       mountedRef.current = false;
       activeEpochRef.current = 0;
+      offerDetachedRetry.current?.();
+      offerDetachedRetry.current = null;
     };
   }, []);
 
@@ -109,6 +112,47 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
       ? openRef.current && activeEpochRef.current === epoch
       : Boolean(getState().assistant && getState().assistant?.main !== sid));
     const notify = actions?.notify ?? toast;
+    async function readReplacement(outcome: Outcome) {
+      if (!currentView()) return;
+      try {
+        // A stale/coalesced read may lose to a newer read. Only announce success once the replacement is visible.
+        const updated = await (actions?.refresh ?? refreshAssistant)();
+        const assistant = getState().assistant;
+        if ((!actions?.refresh || updated === false) && (!assistant || assistant.main === sid)) {
+          throw new Error(t("chat-chatview.refresh_failed"));
+        }
+      } catch (e) {
+        if (!currentView()) return;
+        const error = t("personaassistant.load_failed", { error: errorText(e) });
+        const offerRetry = () => {
+          if (!currentView()) return;
+          let used = false;
+          notify(error, "error", {
+            label: t("personaassistant.retry"),
+            sticky: true,
+            run: () => {
+              if (used) return;
+              used = true;
+              void readReplacement(outcome);
+            },
+          });
+        };
+        if (mountedRef.current) {
+          offerDetachedRetry.current = offerRetry;
+          setReadRetry({ epoch, outcome, error });
+        } else {
+          offerRetry();
+        }
+        return;
+      }
+      // The refresh itself can unmount the menu. It belongs to this request unless the user left its page or scope.
+      if (!scope.current() || !scope.samePage() || (mountedRef.current && activeEpochRef.current !== epoch)) return;
+      onCloseRef.current();
+      (actions?.navigateMain ?? (() => navigate({ name: "persona" })))();
+      onNavigateRef.current?.();
+      notify(outcome.message, outcome.tone);
+    }
+    offerDetachedRetry.current = null;
     busyLockRef.current = true;
     setBusyEpoch(epoch);
     try {
@@ -128,31 +172,9 @@ export function NewMainDialog({ open, onClose, session, scopeKey, onNavigate, de
           outcome = { message: t("assistant-assistantchat.new_main_elsewhere"), tone: "info" };
         }
       }
-      if (!currentView()) return;
-      try {
-        // A stale/coalesced read may lose to a newer read. Only announce success once the replacement is visible.
-        const updated = await (actions?.refresh ?? refreshAssistant)();
-        const assistant = getState().assistant;
-        if ((!actions?.refresh || updated === false) && (!assistant || assistant.main === sid)) {
-          throw new Error(t("chat-chatview.refresh_failed"));
-        }
-      } catch (e) {
-        if (currentView()) {
-          const error = t("personaassistant.load_failed", { error: errorText(e) });
-          if (mountedRef.current) setReadRetry({ epoch, outcome, error });
-          else notify(error, "error");
-        }
-        return;
-      }
-      // The refresh itself can unmount the menu. It belongs to this request unless the user left its page or scope.
-      if (!scope.current() || !scope.samePage() || (mountedRef.current && activeEpochRef.current !== epoch)) return;
-      onCloseRef.current();
-      (actions?.navigateMain ?? (() => navigate({ name: "persona" })))();
-      onNavigateRef.current?.();
-      notify(outcome.message, outcome.tone);
+      await readReplacement(outcome);
     } finally {
       release();
-      scope.release();
       if (activeEpochRef.current === epoch) {
         busyLockRef.current = false;
         if (mountedRef.current) setBusyEpoch(null);

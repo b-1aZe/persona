@@ -6,9 +6,9 @@
 import { useSyncExternalStore } from "react";
 import { t } from "../i18n";
 import { toast } from "../ui/atoms";
-import { api, ApiError, credentialOwner, errorText, onCredentialChange } from "./api";
+import { api, ApiError, credentialOwner, errorText } from "./api";
 import type { ComposerCommand } from "./extension-prompts";
-import { chosenManager, onManagerChoice } from "./manager-choice";
+import { chosenManager, onDefaultManager, onManagerChoice } from "./manager-choice";
 import { navigate, subscribeRoute } from "./router";
 import { getState, refreshAssistant, subscribe } from "./store";
 
@@ -105,20 +105,29 @@ const defaultDeps: ClearDeps = {
 
 const inFlight = new Set<string>();
 const busyListeners = new Set<() => void>();
-/** Capture the account and manager for one request, including switches away and back while it is pending. */
+// A read-only recovery action can outlive the row that started it. Track changes once per tab so
+// dismissing a retry needs no per-request subscription cleanup, even after leaving and coming back.
+let watchingScope = false;
+let pageVersion = 0;
+let managerVersion = 0;
 export function mainActionScope() {
-  let changed = false;
+  const url = globalThis.location?.href;
+  if (!watchingScope) {
+    watchingScope = true;
+    let lastUrl = url;
+    subscribeRoute(() => {
+      const next = globalThis.location?.href;
+      if (next !== lastUrl) { lastUrl = next; pageVersion++; }
+    });
+    onManagerChoice(() => { managerVersion++; });
+    onDefaultManager(() => { managerVersion++; });
+  }
+  const page = pageVersion;
+  const manager = managerVersion;
   const owner = safeCredentialOwner();
-  const url = typeof location === "undefined" ? undefined : location.href;
-  let leftPage = false;
-  const offRoute = subscribeRoute(() => { if (location.href !== url) leftPage = true; });
-  const invalidate = () => { changed = true; };
-  const offManager = onManagerChoice(invalidate);
-  const offOwner = onCredentialChange(invalidate);
   return {
-    current: () => !changed && safeCredentialOwner() === owner,
-    samePage: () => !leftPage && (typeof location === "undefined" || location.href === url),
-    release: () => { offManager(); offOwner(); offRoute(); },
+    current: () => manager === managerVersion && safeCredentialOwner() === owner,
+    samePage: () => page === pageVersion && globalThis.location?.href === url,
   };
 }
 
@@ -206,7 +215,6 @@ export async function clearMainContext(sid: string, overrides: Partial<ClearDeps
     }
     return true;
   } finally {
-    scope.release();
     release();
   }
 }

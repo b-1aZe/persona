@@ -8,6 +8,7 @@ import { COMPACT_FEATURE, COMPACT_REQUESTED_EVENT, NEW_MAIN_FEATURE } from "../l
 import { CLEAR_MAIN_FEATURE, clearMainContext, forgetMainCleared, isMainClearing, mainCleared } from "../lib/main-clear";
 import { getState, refreshAssistant, reset, useStore } from "../lib/store";
 import { navigate } from "../lib/router";
+import { Toasts } from "../ui/atoms";
 import type { Session } from "../lib/types";
 import { ConversationRowMenu, type ConversationRowMenuViewProps, type MainCapabilities } from "./ConversationRowMenu";
 import { NewMainDialog, type NewMainResult } from "./assistant/NewMainDialog";
@@ -510,6 +511,53 @@ describe("Main chat mutations from competing devices and menu entries", () => {
     expect(start).toHaveBeenCalledTimes(1);
     expect(home).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledWith(t("assistant-assistantchat.new_main_elsewhere"), "info");
+  });
+
+  it.each([
+    { pushFirst: true, leave: false },
+    { pushFirst: true, leave: true },
+    { pushFirst: false, leave: false },
+  ])("keeps a read-only retry after the sidebar dialog unmounts (push first=$pushFirst, leave and return=$leave)", async ({ pushFirst, leave }) => {
+    navigate({ name: "persona", sid: "side" });
+    const reply = deferred<NewMainResult>();
+    const start = vi.fn(() => reply.promise);
+    const refresh = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(true);
+    const home = vi.fn();
+    function SidebarMenu() {
+      const main = useStore((state) => state.assistant?.main);
+      return main === "main-1" && <ConversationRowMenu s={makeMainSession()} main anchor={anchor} onClose={() => {}}
+        deps={{ newMainDialogDeps: { startNewMain: start, refresh, navigateMain: home } }} />;
+    }
+    act(() => root.render(<><SidebarMenu /><Toasts /></>));
+    const newMain = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find(el => el.textContent?.includes(t("assistant-assistantchat.new_main_ellipsis")))!;
+    await act(async () => newMain.click());
+    await act(async () => dialogButton("assistant-assistantchat.new_main").click());
+
+    const conflict = () => reply.reject(new ApiError(409, "changed", { code: "main_changed" }));
+    if (!pushFirst) {
+      await act(async () => conflict());
+      expect(dialogButton("personaassistant.retry")).toBeTruthy();
+    }
+    vi.stubGlobal("fetch", async () => Response.json({ machine_id: "hub", main: "replacement", conversations: [] }));
+    await act(async () => { await refreshAssistant(); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    if (pushFirst) await act(async () => conflict());
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(home).not.toHaveBeenCalled();
+    const notice = Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-live="polite"] button'))
+      .find(button => button.textContent?.trim() === t("personaassistant.retry"));
+    expect(notice).toBeDefined();
+    expect(notice!.parentElement?.textContent).toContain("offline");
+    if (leave) {
+      navigate({ name: "history" });
+      navigate({ name: "persona", sid: "side" });
+    }
+    await act(async () => notice!.click());
+    expect(refresh).toHaveBeenCalledTimes(leave ? 1 : 2);
+    expect(home).toHaveBeenCalledTimes(leave ? 0 : 1);
+    expect(start).toHaveBeenCalledOnce();
+    navigate({ name: "persona" });
   });
 
   it("finishes when a store update unmounts the dialog before the mutation reply", async () => {
