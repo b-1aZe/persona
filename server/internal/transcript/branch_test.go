@@ -435,11 +435,6 @@ func TestBranchesAcrossWindows(t *testing.T) {
 	if windowed.base == 0 {
 		t.Fatal("the file was not read in a window")
 	}
-	if m := windowed.Meta(); windowed.partialMeta || m.LastText != "答二改" {
-		t.Fatal("full metadata did not reach the final reply")
-	} else if m.tree.raw != nil || windowed.meta.tree.raw != nil {
-		t.Fatal("full metadata retained the last raw line")
-	}
 	windowedTokenAtOpen := windowed.history()
 	// Page back to the start.
 	var seq int
@@ -465,6 +460,13 @@ func TestBranchesAcrossWindows(t *testing.T) {
 	}
 	if windowed.history() != whole.history() {
 		t.Fatalf("history after paging back %q (opened with %q), whole read %q", windowed.history(), windowedTokenAtOpen, whole.history())
+	}
+	m := windowed.Meta()
+	if windowed.partialMeta || m.FirstUser != "一" {
+		t.Fatalf("full metadata did not reach the first prompt: %q", m.FirstUser)
+	}
+	if m.tree.raw != nil || windowed.meta.tree.raw != nil {
+		t.Fatal("full metadata retained the last raw line")
 	}
 }
 
