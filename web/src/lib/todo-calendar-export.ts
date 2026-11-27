@@ -1,4 +1,5 @@
 import { dayKey, type CalendarEntry } from "./todo-calendar";
+import { BUILTIN_MANAGER } from "./manager-choice";
 import { fingerprint } from "./feed-cache";
 
 function utcStamp(ms: number): string {
@@ -8,7 +9,10 @@ function utcStamp(ms: number): string {
 // RFC 5545 TEXT uses a backslash for punctuation and newlines. Other control characters
 // (except tab) cannot appear in a content line.
 function summary(title: string): string {
-  return title.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+  // File and image links can carry credentials and private host, machine, session and path names.
+  const safeTitle = title.replace(/(?:https?:\/\/|\/)[^\s<>"]+/gi, url =>
+    url.includes("/api/v1/") && /[?&]token=/i.test(url) ? "…" : url);
+  return safeTitle.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/\\/g, "\\\\").replace(/\r\n|[\r\n]/g, "\\n").replace(/[,;]/g, "\\$&");
 }
 
@@ -29,15 +33,16 @@ function fold(line: string): string {
   return result;
 }
 
-export function deadlineCalendar(entries: readonly CalendarEntry[], now: number): string {
+export function deadlineCalendar(entries: readonly CalendarEntry[], hub: string): string {
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Persona//To-do deadlines//EN"];
-  const stamp = utcStamp(now);
   for (const entry of entries) {
+    // Each hub belongs to one owner. An ID can also be reused by a manager or a newly created task.
+    const identity = JSON.stringify([hub, entry.manager || BUILTIN_MANAGER, entry.id, entry.createdAt]);
     lines.push(
       "BEGIN:VEVENT",
-      `UID:${fingerprint(entry.id)}@todos.persona.invalid`,
-      `DTSTAMP:${stamp}`,
-      entry.allDay ? `DTSTART;VALUE=DATE:${dayKey(entry.start).replaceAll("-", "")}` : `DTSTART:${utcStamp(entry.start)}`,
+      `UID:${fingerprint(identity)}@todos.persona.invalid`,
+      `DTSTAMP:${utcStamp(Date.parse(entry.updatedAt))}`,
+      entry.dueDate ? `DTSTART;VALUE=DATE:${entry.dueDate.replaceAll("-", "")}` : `DTSTART:${utcStamp(entry.start)}`,
       fold(`SUMMARY:${summary(entry.title)}`),
       "TRANSP:TRANSPARENT",
       "END:VEVENT",
@@ -46,8 +51,8 @@ export function deadlineCalendar(entries: readonly CalendarEntry[], now: number)
   return [...lines, "END:VCALENDAR", ""].join("\r\n");
 }
 
-export function downloadDeadlines(entries: readonly CalendarEntry[], firstDay: number): void {
-  const blob = new Blob([deadlineCalendar(entries, Date.now())], { type: "text/calendar;charset=utf-8" });
+export function downloadDeadlines(entries: readonly CalendarEntry[], firstDay: number, hub: string): void {
+  const blob = new Blob([deadlineCalendar(entries, hub)], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.download = `deadlines-${dayKey(firstDay)}.ics`;

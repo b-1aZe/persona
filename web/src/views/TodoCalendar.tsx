@@ -31,6 +31,8 @@ import {
   type CalendarMode,
   type DuePatch,
 } from "../lib/todo-calendar";
+import { here } from "../lib/hubs";
+import { getState } from "../lib/store";
 import { downloadDeadlines } from "../lib/todo-calendar-export";
 import { TODO_STATUS_INFO, type SessionLookup, type Todo } from "../lib/todos";
 import { PHONE, useMedia } from "../lib/viewport";
@@ -589,6 +591,10 @@ export function TodoCalendar({
   const [moves, setMoves] = useState<Record<string, DuePatch>>({});
   const shownTodos = useMemo(() => (Object.keys(moves).length ? todos.map((td) => (moves[td.id] ? movedTodo(td, moves[td.id]) : td)) : todos), [todos, moves]);
   const entries = useMemo(() => calendarEntries(shownTodos, { lookup, showDone, from, to, now }), [shownTodos, lookup, showDone, from, to, now]);
+  const download = () => {
+    const hub = getState().mesh.find(h => h.self)?.hub_id || here();
+    downloadDeadlines(entries, from, hub);
+  };
   const drop = useCallback(
     async (entry: CalendarEntry, at: CalendarDrop) => {
       const patch = dropPatch(entry, at);
@@ -648,7 +654,7 @@ export function TodoCalendar({
             {t("todos.calendar_show_done")}
           </label>
         </div>
-        <Button icon="download" className="touch-hit" disabled={!entries.length} onClick={() => downloadDeadlines(entries, from)}>
+        <Button icon="download" className="touch-hit" disabled={!entries.length} onClick={download}>
           {t("todos.calendar_download")}
         </Button>
       </div>
