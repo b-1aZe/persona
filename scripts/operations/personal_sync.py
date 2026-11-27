@@ -142,6 +142,7 @@ def build_test(src, stage, expected, fixture_file):
         if out(binary, "version") != expected["version"]:
             raise ValueError(f"incorrect stamp on {name}")
     BAD = "TEST_FAIL"
+    cmd("node", "--test", "integrations/antigravity/test/usage-runtime.test.js", cwd=src)
     cmd("bash", "scripts/ci/server.sh", "build", cwd=src, timeout=3600)
     isolated = ["python3", src / "scripts/test/server_test_env.py", "--database-file", fixture_file,
                 "--", "go", "test", "-count=1", "-timeout=8m", "-p", "2"]

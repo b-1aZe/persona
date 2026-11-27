@@ -50,6 +50,16 @@ test('agy polls native quota summaries and publishes normalized usage windows', 
   assert.equal(calls().length, count, 'a stopped runtime does not poll again')
 })
 
+test('personal built-in companion reports subscription windows on cold start without a session', async (t) => {
+  const { node, calls, starts } = await fixture(t, ['usage_windows'], {
+    instance: 'builtin-agy-123-1',
+  })
+  const sample = await until('cold-start subscription quota', () => node.last('usage.windows'))
+  assert.equal(sample.windows[0].used_percent, 25)
+  assert.equal(starts().length, 1)
+  assert.deepEqual(calls().map(({ method }) => method), ['RetrieveUserQuotaSummary'])
+})
+
 test('agy does not start a native quota reader against an older node', async (t) => {
   const { node, calls } = await fixture(t, [])
   await new Promise((resolve) => setTimeout(resolve, 80))

@@ -858,7 +858,7 @@ A runtime with read-only access to a subscription's rate-limit windows calls `rt
 
 The node advertises `usage_windows` only to runtimes on the local socket, not to daemons (their accounts must not be attributed to the node's machine). The SDK returns false while disconnected or with an older node and does not queue reports. A connected hub is not required because the node stores the snapshot locally. Reports replace the source named by the runtime id, so a companion restart does not duplicate its account. An older sample cannot replace a newer one; a valid empty `windows` array explicitly clears the source. The machine's existing `usage_windows` off switch rejects these reports too.
 
-Antigravity implements this source with a running ACP worker's native `RetrieveUserQuotaSummary` method and `forceRefresh: false`, sampling when a session opens, a turn completes, or the node reconnects while a worker is already live (#15253). It never spawns an idle `agy acp` process just to read quota, does not extend a worker's idle timer, and does not read the status-line command's account fields, invoke an account API itself, or start a model request.
+Antigravity implements this source with a running ACP worker's native `RetrieveUserQuotaSummary` method and `forceRefresh: false`, sampling when a session opens, a turn completes, or the node reconnects while a worker is already live (#15253). The personal build's built-in companion also samples on connection and every 15 minutes. It can start a worker for this read and lets that worker retire between samples. External companions only use live workers. Quota sampling never starts a model request.
 
 ### Shared runtime behavior
 
