@@ -272,11 +272,17 @@ def deploy(stage, expected, path):
     PENDING.unlink()
 
 
+USAGE = "usage: daily-sync.sh [--upstream COMMIT | --rollback BACKUP]"
+
+
 def sync(args):
     global BAD
+    if args and (len(args) != 2 or args[0] not in ("--rollback", "--upstream")):
+        raise ValueError(USAGE)
+    target = args[1] if args and args[0] == "--upstream" else "upstream/main"
+    if args and args[0] == "--upstream":
+        args = []
     if PENDING.exists() or args:
-        if args and (len(args) != 2 or args[0] != "--rollback"):
-            raise ValueError("usage: daily-sync.sh [--rollback BACKUP]")
         path = Path(json.loads(PENDING.read_text())) if PENDING.exists() else Path(args[1]).resolve()
         if path.parent != BACKUPS or not path.name.startswith("personal-"):
             raise ValueError("expected a personal snapshot")
@@ -287,14 +293,18 @@ def sync(args):
     if out("git", "branch", "--show-current") != "personal":
         raise ValueError("expected personal checkout")
     merge_head = Path(out("git", "rev-parse", "--git-path", "MERGE_HEAD"))
+    before = None
     if not merge_head.exists():
         if out("git", "status", "--porcelain"):
             raise ValueError("personal checkout has local changes")
         cmd("git", "fetch", "--no-tags", "upstream", "refs/heads/main:refs/remotes/upstream/main")
         cmd("git", "fetch", "--no-tags", "origin", "refs/heads/personal:refs/remotes/origin/personal")
         cmd("git", "merge-base", "--is-ancestor", "origin/personal", "HEAD")
+        # A pinned commit must come from upstream main, never from another branch.
+        cmd("git", "merge-base", "--is-ancestor", target, "upstream/main")
+        before = out("git", "rev-parse", "HEAD")
         try:
-            cmd("git", "merge", "--no-edit", "upstream/main")
+            cmd("git", "merge", "--no-edit", target)
         except sp.CalledProcessError:
             if not merge_head.exists():
                 raise
@@ -317,8 +327,16 @@ def sync(args):
         src = tmp / "source"
         cmd("git", "worktree", "add", "--detach", "--quiet", src, head)
         try:
-            with fixture(tmp) as (_, file):
-                build_test(src, tmp, expected, file)
+            try:
+                with fixture(tmp) as (_, file):
+                    build_test(src, tmp, expected, file)
+            except BaseException:
+                # Drop the merge this run made, so the branch keeps matching the live build
+                # and the next run merges upstream again from the tested version.
+                if before and before != head and out("git", "rev-parse", "HEAD") == head:
+                    cmd("git", "reset", "--hard", "--quiet", before)
+                    print("Reset personal to", before, flush=True)
+                raise
             with restore_fixture() as verifier:
                 BAD = "BACKUP_FAIL"
                 old = health()
