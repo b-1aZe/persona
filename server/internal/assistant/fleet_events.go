@@ -198,7 +198,12 @@ func (s *Service) endNodeInteraction(p nodeInteractionEnd, status, preparedText 
 	if p.CreatedAt.IsZero() {
 		readCtx, cancel := context.WithTimeout(runCtx, historyTimeout)
 		_, protected, err := s.findApprovalJournal(readCtx, func(a approvalJournalEntry) bool {
-			return a.ID == p.ID && a.Fingerprint != "" && (!a.WaitingUntil.IsZero() || a.Status == "applying" || a.Result != "")
+			// Legacy commands lack both occurrence fields and may lack a kind.
+			legacyCommand := a.CreatedAt.IsZero() && (a.Kind == "" || a.Kind == proto.IxPermission)
+			if a.ID != p.ID || a.Finalized || (a.Fingerprint == "" && !legacyCommand) {
+				return false
+			}
+			return a.Status == "applying" || a.Result != "" || !a.WaitingUntil.IsZero()
 		})
 		cancel()
 		if err == nil && !protected {

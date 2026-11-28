@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -331,4 +332,315 @@ func TestLegacyStoredNodeEndNeverRetriesAgainstANewCard(t *testing.T) {
 			t.Fatalf("a deferred ID-only end withdrew the replacement: status=%s err=%v", status, err)
 		}
 	})
+}
+
+func TestLegacyDismissBeforeApprovalRecoveryPostgres(t *testing.T) {
+	for _, status := range []string{"applying", "approved"} {
+		t.Run(status, func(t *testing.T) {
+			ctx := t.Context()
+			database, err := db.Open(ctx, newMigratedDatabase(t, db.ManagerSet), db.ManagerSet)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(database.Close)
+			ft := newFleetTestOn(t, database)
+			preparedTestConversation(ft)
+			ix := detachedTestCard("ix_legacy_dismiss")
+			if err := database.InsertInteraction(ctx, ix); err != nil {
+				t.Fatal(err)
+			}
+			entry := approvalJournalEntry{ID: ix.ID, MachineID: ix.MachineID, SessionID: ix.SessionID,
+				Status: status, UpdatedAt: time.Now().UTC()}
+			if err := ft.s.putDetachedGrant(ctx, ix, proto.Resolution{}); err != nil {
+				t.Fatal(err)
+			}
+			if status == "approved" {
+				entry.UpdatedAt = time.Now().UTC()
+				entry.Result = approvalResultText(ix.ID, status, "Retry the exact call.")
+				entry.Continuation = true
+			}
+			if err := database.PutSetting(ctx, approvalJournalKey, []approvalJournalEntry{entry}); err != nil {
+				t.Fatal(err)
+			}
+			s := newRestartedService(t, Options{Hub: ft.f, Devices: ft.d, Store: func() Store { return database }, Logf: testLogf(t)})
+			s.endNodeInteraction(nodeInteractionEnd{ID: ix.ID}, "dismissed", "", &proto.Resolution{Dismiss: true, AnsweredBy: proto.AnsweredByTerminal})
+			s.recoverApprovalJournals(ctx)
+			rec, err := database.InteractionRecord(ctx, ix.ID)
+			if err != nil || rec == nil {
+				t.Fatalf("reload history: %+v, %v", rec, err)
+			}
+			wantHistory, wantResult := "failed", "uncertain"
+			if status == "approved" {
+				wantHistory, wantResult = "resolved", "approved"
+			}
+			if rec.Status != wantHistory {
+				t.Errorf("history = %q, want %q", rec.Status, wantHistory)
+			}
+			if result := waitFakeApprovalResult(t, ft.f, ix.ID); !strings.Contains(result, wantResult) {
+				t.Errorf("delivered %q, want %q", result, wantResult)
+			}
+			retry := ix
+			retry.ID = "ix_retry"
+			for attempt := range 2 {
+				permit, found, err := s.consumeDetachedGrant(ctx, retry)
+				want := status == "approved" && attempt == 0
+				if err != nil || found != want || permit.UserAllowed() != want {
+					t.Errorf("retry %d: permit=%+v found=%v err=%v, want allow=%v", attempt+1, permit, found, err, want)
+				}
+			}
+		})
+	}
+}
+
+// Intercept a history read between the journal snapshot and its reconciliation.
+type waitingRecoveryStore struct {
+	*expireReadFailStore
+	beforeRead func(context.Context, string) error
+}
+
+func (st *waitingRecoveryStore) InteractionRecord(ctx context.Context, id string) (*db.InteractionRecord, error) {
+	if err := st.beforeRead(ctx, id); err != nil {
+		return nil, err
+	}
+	return st.restoreMem.InteractionRecord(ctx, id)
+}
+
+func newWaitingRecoveryTest(t *testing.T, cards ...proto.Interaction) (*Service, *waitingRecoveryStore) {
+	t.Helper()
+	ft := newFleetTest(t)
+	preparedTestConversation(ft)
+	var entries []approvalJournalEntry
+	for _, ix := range cards {
+		ft.s.record(ix)
+		digest, err := detachedFingerprintDigest(ix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, approvalJournalEntry{ID: ix.ID, MachineID: ix.MachineID, SessionID: ix.SessionID,
+			CreatedAt: ix.CreatedAt, Fingerprint: digest, WaitingUntil: ix.ExpiresAt, Summary: ix.ToolName})
+	}
+	if err := ft.st.PutSetting(t.Context(), approvalJournalKey, entries); err != nil {
+		t.Fatal(err)
+	}
+	st := &waitingRecoveryStore{expireReadFailStore: &expireReadFailStore{restoreMem: &restoreMem{fleetMem: ft.st}}}
+	s := newRestartedService(t, Options{Hub: ft.f, Devices: ft.d, Store: func() Store { return st }, Logf: testLogf(t)})
+	return s, st
+}
+
+func assertRecoveryDeliveryOpen(t *testing.T, s *Service) {
+	t.Helper()
+	s.approvals.mu.Lock()
+	defer s.approvals.mu.Unlock()
+	if s.approvals.recovering || !s.approvals.recoveryDone {
+		t.Fatalf("recovery blocked delivery: recovering=%v done=%v", s.approvals.recovering, s.approvals.recoveryDone)
+	}
+}
+
+func TestSupersededDetachedRecoveryDiscardsHistoryReads(t *testing.T) {
+	for _, read := range []string{"error", "success"} {
+		t.Run(read, func(t *testing.T) {
+			ctx := t.Context()
+			a, b := detachedTestCard("ix_first"), detachedTestCard("ix_second")
+			s, st := newWaitingRecoveryTest(t, a, b)
+			// Pass one reads A before its waiting deadline becomes durable.
+			if err := st.UpdateInteractionDeadline(ctx, a.ID, a.CreatedAt, a.CreatedAt); err != nil {
+				t.Fatal(err)
+			}
+			entered, resume := make(chan struct{}), make(chan struct{})
+			var blocked atomic.Bool
+			st.beforeRead = func(ctx context.Context, id string) error {
+				if id == b.ID && blocked.CompareAndSwap(false, true) {
+					close(entered)
+					select {
+					case <-resume:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					if read == "error" {
+						return errors.New("stale read failed")
+					}
+				}
+				return nil
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.recoverApprovalJournals(ctx)
+			}()
+			select {
+			case <-entered:
+			case <-done:
+				t.Fatal("first recovery finished before reading the second card")
+			}
+			err := st.UpdateInteractionDeadline(ctx, a.ID, a.CreatedAt, a.ExpiresAt)
+			s.recoverApprovalJournals(ctx)
+			close(resume)
+			<-done
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertRecoveryDeliveryOpen(t, s)
+			var journal []approvalJournalEntry
+			if _, err := st.Setting(ctx, approvalJournalKey, &journal); err != nil {
+				t.Fatal(err)
+			}
+			if len(journal) != 2 || !journal[0].unansweredDetached() || !journal[1].unansweredDetached() {
+				t.Fatalf("older pass rewrote the newer waiting journal: %+v", journal)
+			}
+		})
+	}
+}
+
+func TestCancelledDetachedReplayKeepsRecoveryDeliveryOpen(t *testing.T) {
+	for _, phase := range []string{"during_recovery", "after_recovery"} {
+		t.Run(phase, func(t *testing.T) {
+			ix := detachedTestCard("ix_cancelled_hook")
+			s, st := newWaitingRecoveryTest(t, ix)
+			hookCtx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var reads atomic.Int32
+			st.beforeRead = func(ctx context.Context, _ string) error {
+				if phase == "during_recovery" && reads.Add(1) == 2 {
+					cancel() // The reconnect started journal recovery and then disconnected.
+				}
+				return ctx.Err()
+			}
+			if phase == "after_recovery" {
+				// The batch is complete, but fleet still owes a snapshot retry.
+				st.fail.Store(true)
+				s.recoverApprovalJournals(t.Context())
+				assertRecoveryDeliveryOpen(t, s)
+				cancel()
+			}
+			r, handled, err := s.journaledDetachedReplay(hookCtx, ix)
+			if hookCtx.Err() == nil || err != nil || !handled || !r.Pending || r.UserAllowed() {
+				t.Fatalf("cancelled replay: handled=%v res=%+v err=%v ctx=%v", handled, r, err, hookCtx.Err())
+			}
+			assertRecoveryDeliveryOpen(t, s)
+			if phase == "during_recovery" && len(s.pendingInteractions()) != 1 {
+				t.Fatal("disconnected hook left the waiting card unrestored")
+			}
+		})
+	}
+}
+
+func TestDetachedSnapshotRetryDeliversSiblingResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, b := detachedTestCard("ix_unreadable"), detachedTestCard("ix_answerable")
+		s, st := newWaitingRecoveryTest(t, a, b)
+		var reads atomic.Int32
+		st.beforeRead = func(ctx context.Context, id string) error {
+			if id == a.ID && reads.Add(1) > 1 {
+				return errors.New("snapshot row remains unavailable")
+			}
+			return nil
+		}
+		s.recoverApprovalJournals(t.Context())
+		assertRecoveryDeliveryOpen(t, s)
+		elapse(time.Minute)
+		allow := false
+		if err := s.resolve(b.ID, proto.Resolution{Allow: &allow}); err != nil {
+			t.Fatal(err)
+		}
+		assertRecoveryDeliveryOpen(t, s)
+		if result := waitFakeApprovalResult(t, s.hub.(*fakeHub), b.ID); !strings.Contains(result, "denied") {
+			t.Fatalf("sibling result = %q", result)
+		}
+	})
+}
+
+func TestExpiredSchedulerPassCannotSupersedeDetachedReplay(t *testing.T) {
+	ix := detachedTestCard("ix_recover_before_scheduler")
+	s, st := newWaitingRecoveryTest(t, ix)
+	expired, cancel := context.WithCancel(t.Context())
+	cancel()
+	var reads atomic.Int32
+	st.beforeRead = func(ctx context.Context, _ string) error {
+		if reads.Add(1) == 2 {
+			// The hook's recovery owns this read when the scheduler arrives.
+			s.recoverApprovalJournals(expired)
+		}
+		return ctx.Err()
+	}
+	r, handled, err := s.journaledDetachedReplay(t.Context(), ix)
+	if err != nil || !handled || !r.Pending || r.UserAllowed() {
+		t.Fatalf("replay = %+v, handled=%v err=%v", r, handled, err)
+	}
+	assertRecoveryDeliveryOpen(t, s)
+	if len(s.pendingInteractions()) != 1 {
+		t.Fatal("the healthy recovery did not restore the waiting card")
+	}
+}
+
+func TestOrdinaryJournalDoesNotBlockIDOnlyDismissal(t *testing.T) {
+	for _, format := range []string{"dated_permission", "undated_question", "finalized_legacy"} {
+		t.Run(format, func(t *testing.T) {
+			ft := newFleetTest(t)
+			ix := permission("ix_reused_ordinary")
+			ft.s.record(ix)
+			old := approvalJournalEntry{ID: ix.ID, Kind: proto.IxPermission, Status: "denied", Result: "Denied.",
+				CreatedAt: ix.CreatedAt.Add(-time.Hour), UpdatedAt: ix.CreatedAt.Add(-time.Minute)}
+			if format == "undated_question" {
+				old.Kind, old.CreatedAt = proto.IxQuestion, time.Time{}
+			} else if format == "finalized_legacy" {
+				old.CreatedAt, old.Finalized = time.Time{}, true
+			}
+			putApprovalJournal(t, ft, old)
+			st := &restoreReadFailStore{restoreMem: &restoreMem{fleetMem: ft.st}, id: ix.ID}
+			st.fail.Store(true)
+			s := newRestartedService(t, Options{Hub: ft.f, Devices: ft.d, Store: func() Store { return st }, Logf: testLogf(t)})
+			s.endNodeInteraction(nodeInteractionEnd{ID: ix.ID}, "dismissed", "", nil)
+			status, _, err := st.InteractionOutcome(t.Context(), ix.ID)
+			if err != nil || status != "dismissed" {
+				t.Fatalf("ordinary card after ID-only dismissal: status=%q err=%v", status, err)
+			}
+		})
+	}
+}
+
+func TestPostStartupRecoveryLeavesApprovedHistoryToDelivery(t *testing.T) {
+	s, st := newWaitingRecoveryTest(t)
+	s.recoverApprovalJournals(t.Context())
+	ix := detachedTestCard("ix_unfinalized_approved")
+	s.record(ix)
+	if err := s.putDetachedGrant(t.Context(), ix, proto.Resolution{}); err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	var reads atomic.Int32
+	st.beforeRead = func(ctx context.Context, id string) error {
+		if id == ix.ID && reads.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return nil
+	}
+	// The owner Allow's history write failed. Delivery has claimed that write
+	// when the timer requests another pass for missing cards.
+	s.approvalJournalFinished(t.Context(), ix, "approved", "Retry the exact call.", false)
+	<-started
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.recoverApprovalJournals(t.Context())
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("post-startup recovery waited on the active delivery finalizer")
+	}
+	close(release)
+	<-done
+	if result := waitFakeApprovalResult(t, s.hub.(*fakeHub), ix.ID); !strings.Contains(result, "approved") {
+		t.Errorf("delivered result = %q", result)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Errorf("history reads for the unfinalized approval = %d, want one", n)
+	}
+	retry := ix
+	retry.ID = "ix_exact_retry"
+	permit, found, err := s.consumeDetachedGrant(t.Context(), retry)
+	if err != nil || !found || !permit.UserAllowed() {
+		t.Fatalf("approved grant after concurrent finalization: %+v, found=%v, %v", permit, found, err)
+	}
 }

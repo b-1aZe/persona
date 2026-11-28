@@ -332,7 +332,7 @@ func (s *Service) journaledDetachedReplay(ctx context.Context, ix proto.Interact
 			if ready {
 				s.restoreInteractions(ctx)
 			} else {
-				s.recoverApprovalJournals(ctx)
+				s.recoverManagerApprovalJournals()
 			}
 			// Restoration may have taken the card past its original deadline or
 			// observed a terminal row while finalizing the batch.

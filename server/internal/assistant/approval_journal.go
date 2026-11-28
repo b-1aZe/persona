@@ -874,11 +874,11 @@ func (s *Service) ownsDetachedWaiting(entry approvalJournalEntry) bool {
 	return p != nil && p.prepared != nil && p.prepared.waiting && entry.matchesStored(p.ix)
 }
 
-// Restore and replay read the same journal. A transient read cannot decide an
-// owner's unanswered request. Retry the startup pass with delivery still gated.
+// Startup gates delivery until its terminal siblings are durable. A later
+// retry of a missing waiting card must leave their results deliverable.
 func (s *Service) retryApprovalRecoveryLocked() {
 	b := &s.approvals
-	b.recovering, b.recoveryDone = true, false
+	b.recovering = !b.recoveryDone
 	s.scheduleApprovalRecoveryLocked()
 }
 
@@ -898,11 +898,23 @@ func (s *Service) scheduleApprovalRecoveryLocked() {
 	}
 }
 
+// Startup and a reconnect can both start this batch. Give it its own manager
+// deadline independent of the hook and of preceding scheduler recovery work.
+func (s *Service) recoverManagerApprovalJournals() {
+	ctx, cancel := context.WithTimeout(s.runCtx(), taskFailTimeout)
+	defer cancel()
+	s.recoverApprovalJournals(ctx)
+}
+
 // recoverApprovalJournals leaves complete unanswered detachable cards for
 // interaction restore. An interrupted apply remains uncertain.
 func (s *Service) recoverApprovalJournals(ctx context.Context) {
 	b := &s.approvals
 	b.mu.Lock()
+	if b.recoverySeq != 0 && ctx.Err() != nil {
+		b.mu.Unlock()
+		return
+	}
 	if !s.loadApprovalJournalLocked(ctx) {
 		s.retryApprovalRecoveryLocked()
 		b.mu.Unlock()
@@ -910,7 +922,7 @@ func (s *Service) recoverApprovalJournals(ctx context.Context) {
 	}
 	b.recoverySeq++
 	seq := b.recoverySeq
-	b.recovering, b.recoveryDone = true, false
+	b.recovering = !b.recoveryDone
 	var recovered []approvalJournalEntry
 	changed := false
 	var needSummary []string
@@ -938,7 +950,9 @@ func (s *Service) recoverApprovalJournals(ctx context.Context) {
 		if err != nil {
 			s.logf("read waiting detached approval %s: %v", a.ID, err)
 			b.mu.Lock()
-			s.retryApprovalRecoveryLocked()
+			if b.recoverySeq == seq {
+				s.retryApprovalRecoveryLocked()
+			}
 			b.mu.Unlock()
 			return
 		}
@@ -946,6 +960,10 @@ func (s *Service) recoverApprovalJournals(ctx context.Context) {
 	}
 
 	b.mu.Lock()
+	if b.recoverySeq != seq {
+		b.mu.Unlock()
+		return
+	}
 	for i := range b.list {
 		if waiting[b.list[i]] || (b.list[i].Result == "" && b.list[i].live) {
 			// Restored continuations and approvals created during a startup
@@ -975,10 +993,11 @@ func (s *Service) recoverApprovalJournals(ctx context.Context) {
 			// cannot make a later same-ID card look like the old occurrence.
 			changed = true
 		}
-		// A terminal journal result can be the only durable outcome after a crash
-		// between its write and the interaction's terminal write. Close every
-		// journaled occurrence before any result delivery can remove its journal.
-		recovered = append(recovered, b.list[i])
+		// Startup must finalize the whole batch before delivery. Once delivery
+		// is open, its single worker owns terminal writes, including retries.
+		if !b.recoveryDone {
+			recovered = append(recovered, b.list[i])
+		}
 	}
 	if changed {
 		if err := s.saveApprovalJournalLocked(ctx); err != nil {
