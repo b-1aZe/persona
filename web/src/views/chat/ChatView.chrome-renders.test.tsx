@@ -57,7 +57,8 @@ vi.mock("./chat-actions", async (load) => {
 vi.mock("../../lib/panel", async (load) => ({ ...(await load<typeof import("../../lib/panel")>()), usePanel: () => null }));
 vi.mock("../assistant/Persona", () => ({ usePersona: () => ({ name: "Persona" }) }));
 
-import { applyCompleteSessions, applyMachine, getState, refreshTodos, reset, type ItemsEvent } from "../../lib/store";
+import { applyCompleteSessions, applyMachine, getSession, getState, refreshTodos, reset, type ItemsEvent } from "../../lib/store";
+import { runtimeAgents, SESSIONS_LOOKUP_FEATURE } from "../../lib/runtime-list";
 import { whenComposer } from "../../lib/links";
 import { closePanel, getPanel, openPanel } from "../../lib/panel";
 import { currentPlatform } from "../../lib/shortcuts";
@@ -569,6 +570,37 @@ it("/workflows opens the Background tasks panel at the latest run instead of goi
   expect(posted("/sessions/mac/s1/messages")).toHaveLength(0);
   expect(getPanel()).toEqual({ kind: "background", mid: "mac", sid: "s1", run: "new" });
   act(() => openPanel(null));
+});
+
+it.each(["list", "lookup"])("does not interrupt from an open Agent header after the %s revokes permission", async (source) => {
+  const shown = row({ capabilities: { read: true, send: true, interrupt: true }, updated_at: "2026-01-01T00:00:00.123000000Z" });
+  const revoked = { ...shown, capabilities: { ...shown.capabilities, interrupt: false }, updated_at: "2026-01-01T00:00:00.123000001Z" };
+  let exact = shown;
+  const page = (session: Session) => Response.json({ sessions: [session], revision: "2", has_more: false, total: 1, remove: [] });
+  const fallback = fetcher.getMockImplementation()!;
+  fetcher.mockImplementation((url: string, init?: RequestInit) => {
+    if (url.includes("/sessions?") && url.includes("session_id=s1")) return Promise.resolve(page(exact));
+    if (url.includes("/sessions?agents_only=1")) return Promise.resolve(page({ ...revoked, waiting: false }));
+    return fallback(url, init);
+  });
+  if (source === "lookup") applyCompleteSessions([shown], [], { features: [SESSIONS_LOOKUP_FEATURE] });
+  await open(<ChatView mid="mac" sid="s1" inPage />, shown);
+  act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
+  const stop = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((r) => r.textContent?.includes(t("chat-chatview.interrupt")))!;
+  expect(stop).toBeDefined();
+  if (source === "list") {
+    await act(async () => { await runtimeAgents.load(); });
+    expect(runtimeAgents.getSnapshot().rows[0].capabilities?.interrupt).toBe(false);
+  } else {
+    exact = revoked;
+  }
+  expect(getSession("mac", "s1")?.capabilities?.interrupt).toBe(true);
+  const reads = () => fetcher.mock.calls.filter(([url]) => String(url).includes("session_id=s1")).length;
+  const before = reads();
+  await act(async () => stop.click());
+  await settle();
+  expect(posted("/sessions/mac/s1/interrupt")).toHaveLength(0);
+  if (source === "lookup") expect(reads()).toBe(before + 1);
 });
 
 it("after the pushes, sending and stopping still go out", async () => {

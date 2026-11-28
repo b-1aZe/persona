@@ -30,6 +30,7 @@ export interface ArchiveCloseActions {
   onNotice?: (message: string, tone: NoticeTone) => void;
 }
 export interface AgentRowMenuActions extends ArchiveCloseActions {
+  readSource?: () => Session | undefined;
   onInterrupt?: (s: Session) => void | Promise<void>;
   onMarkSeen?: (s: Session) => void | Promise<void>;
   onAttach?: (s: Session) => void | Promise<void>;
@@ -79,7 +80,8 @@ export function agentRowMenuItems(s: Session, o: AgentRowMenuItemsOptions): Menu
       key: "stop", label: t("chat-chatview.interrupt"), icon: "stop" as const,
       onSelect: () => {
         if (o.onInterrupt) return runControlled(() => o.onInterrupt!(own), o.onNotice);
-        if (!canInterruptAgentRow(own)) return;
+        const source = o.readSource ? o.readSource() : own;
+        if (!source || !canInterruptAgentRow(source)) return;
         return interruptAgent(s.machine_id, s.session_id).then(
           () => toast(t("chat-chatview.interrupted")),
           (e) => toast(t("chat-chatview.interrupt_failed", { error: errorText(e) }), "error"),
@@ -90,7 +92,8 @@ export function agentRowMenuItems(s: Session, o: AgentRowMenuItemsOptions): Menu
       key: "seen", label: t("agentmenus.mark_seen"), icon: "check" as const,
       onSelect: () => {
         if (o.onMarkSeen) return runControlled(() => o.onMarkSeen!(own), o.onNotice);
-        markRowSeen(own);
+        const source = o.readSource ? o.readSource() : own;
+        if (source && canMarkAgentSeen(source, o.muted)) markRowSeen(source);
       },
     }] : []),
     ...(allowed.includes("attach") ? [{ key: "attach", label: t("chat-chatview.attach"), icon: "link" as const, onSelect: () => (o.onAttach ? runControlled(() => o.onAttach!(s), o.onNotice) : void import("../lib/attach-live").then((m) => m.attachLive(s))) }] : []),

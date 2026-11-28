@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../ui/atoms", () => ({ toast: vi.fn() }));
 
 import { flipMute, flipPin, interruptAgent } from "./agent-actions";
-import { pinManager } from "./manager-choice";
+import { chooseManager, pinManager } from "./manager-choice";
 import { getState, refresh, reset } from "./store";
 import type { Session } from "./types";
 
@@ -56,6 +56,21 @@ it("shares a pending interrupt for one Agent, delivers its failure to both calle
   expect(requests).toHaveLength(2);
   requests[1].answer({ state: "ok" });
   await retry;
+});
+
+it("shares a pending interrupt across a switch of the displayed assistant when the route stays the same", async () => {
+  const requests = heldHub();
+  const first = interruptAgent("m", "a");
+  chooseManager("another-assistant");
+  try {
+    const second = interruptAgent("m", "a");
+    await settle();
+    expect(requests).toHaveLength(1);
+    requests[0].answer({ state: "ok" });
+    await Promise.all([first, second]);
+  } finally {
+    chooseManager(null);
+  }
 });
 
 it.each(["manager", "credential"])("separates pending interrupts when the %s changes", async (scope) => {

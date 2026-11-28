@@ -24,7 +24,7 @@ import { acknowledgeLaunch } from "../../lib/new-agent";
 import { useRuntimeSession } from "../../lib/runtime-session";
 import { SessionDetailNotice } from "../../ui/SessionDetailNotice";
 import { isBackgroundSupervisor } from "../../lib/background-supervisor";
-import { getSession, getState, hubHas, listenSession, markSeenLocally, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
+import { canInterruptAgentRow, getSession, getState, hubHas, listenSession, markSeenLocally, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
 import { useStoreRows } from "../../lib/store-rows";
 import { useCodexThread, waitsForFirstMessage } from "../../lib/codex-waiting";
 import { foldRows } from "../../lib/folded-rows";
@@ -317,15 +317,17 @@ function panelBelongsToAgent(panel: Panel | null, mid: string, sid: string): boo
  *  with `sub` in the title's tooltip), starts ⋯ with the panel's own actions and, beside the title, what the panel
  *  puts there (a task's ⌄ to switch between its agents); the same space's other agents are left out. With `page`, a chat
  *  bubble before × opens the Agent shown as its own page (`/s/…`, as from the Agents list) and the panel closes. */
-export interface PanelChrome {
+export type PanelChrome = {
   onClose: () => void;
   /** The page of the Agent the panel shows: the header's "Open Agent page" button. */
   page?: Route;
   title?: string;
   sub?: string;
-  items?: MenuItem[];
   beside?: React.ReactNode;
-}
+} & (
+  | { kind: "agent"; items?: [] | [MenuItem] }
+  | { kind: "task"; items?: MenuItem[] }
+);
 
 const DeletedConversation = lazy(() => import("../DeletedConversation").then((m) => ({ default: m.DeletedConversation })));
 
@@ -1689,7 +1691,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     setStopping(false);
   }, []);
   const interrupt = useCallback(async () => {
-    if (stopInFlight.current || !sessionCan(getSession(mid, sid), "interrupt")) return;
+    const current = getSession(mid, sid);
+    if (stopInFlight.current || !current || !canInterruptAgentRow(current, true)) return;
     stopInFlight.current = true;
     setStopping(true);
     const waited = awaitingNow.current;
@@ -3418,7 +3421,7 @@ export const Header = memo(function Header({
   const ownPanel = session && panelBelongsToAgent(panel, session.machine_id, session.session_id);
   const here = (kind: Panel["kind"]) => Boolean(ownPanel && panel?.kind === kind);
   const showTerminal = Boolean(view && onView);
-  const isAgentMenu = Boolean(session && !session.assistant && !assistant && !main && !chrome);
+  const isAgentMenu = Boolean(session && !session.assistant && !assistant && !main && chrome?.kind !== "task");
   const panelVisible = ownPanel && (!layout.maximized || narrow);
   const terminalVisible = showTerminal && view === "term";
   const backToChat = () => {
@@ -3494,7 +3497,7 @@ export const Header = memo(function Header({
   const tasksItem: MenuItem[] = tasks && phone ? [{ key: "conversation-tasks", label: t("sidepanel.conversation_tasks"), icon: "todo", checked: tasks.open, onSelect: tasks.onToggle }] : [];
   const own: MenuItem[] = session
     ? [
-        ...(isAgentMenu && (panelVisible || terminalVisible || overview?.open)
+        ...(isAgentMenu && !chrome && (panelVisible || terminalVisible || overview?.open)
           ? [{ key: "back-to-chat", label: t("agentmenus.back_to_chat"), icon: "chat" as const, onSelect: backToChat }]
           : []),
         ...(isAgentMenu && canMarkAgentSeen(session, muted)
@@ -3549,7 +3552,7 @@ export const Header = memo(function Header({
         ...(allowed.includes("attach") ? [{ key: "attach", label: t("chat-chatview.attach"), icon: "link" as const, onSelect: () => void attach() }] : []),
         // Panel entries already visible as right-toolbar buttons on desktop stay in ⋯ only on phone viewports.
         ...(sides && phone ? [{ key: "sides", label: t("chat-chatview.side_sessions_count", { count: sides.count }), icon: "sideSessions" as const, checked: sides.open, onSelect: sides.onToggle }] : []),
-        ...(showTerminal && phone && !(isAgentMenu && terminalVisible) ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, checked: view === "term", onSelect: flipView }] : []),
+        ...(showTerminal && phone && !(isAgentMenu && !chrome && terminalVisible) ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, checked: view === "term", onSelect: flipView }] : []),
         ...(jumpTerminal && phone ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, onSelect: openTerminalPage }] : []),
         ...(resumeOffer !== "hidden"
           ? [{ key: "resume-terminal", label: t("chat-chatview.resume_in_terminal"), icon: "play" as const, disabled: resumeOffer === "no_engine", detail: resumeOffer === "no_engine" ? t("chat-chatview.resume_no_engine", { computer: machineName }) : undefined, onSelect: resumeHere }]
@@ -3593,8 +3596,10 @@ export const Header = memo(function Header({
       ]
     : tasksItem;
   const panelItems = chrome?.items ?? [];
-  const items = isAgentMenu ? groupAgentMenu(own)
-    : panelItems.length && own.length ? [...panelItems, { ...own[0], divider: true }, ...own.slice(1)] : [...panelItems, ...own];
+  const sessionItems = isAgentMenu ? groupAgentMenu(own) : own;
+  const items = panelItems.length && sessionItems.length
+    ? [...panelItems, { ...sessionItems[0], divider: true }, ...sessionItems.slice(1)]
+    : [...panelItems, ...sessionItems];
   // ⋯ sits at the right end of the header toolbar; on the main assistant page desktop uses the title pill on the left,
   // so ⋯ only appears on narrow screens when the shell switch hides the title.
   const assistantTitleMenu = Boolean(assistant && main);

@@ -26,7 +26,7 @@ import { clientInstance, helloDeviceId } from "./device-id";
 import { currentLanguage } from "../i18n";
 import type { AgentMutes } from "./agent-groups";
 import { justFinished } from "./agent-groups";
-import { activityOf, sessionMenuActions } from "./format";
+import { activityOf, sessionCan, sessionMenuActions } from "./format";
 import { timeMs, timeNs } from "./times";
 import { agentKey, NO_PINS, pinsOf, type AgentPins } from "./pins";
 import { holdNotedSeen, recordMarkedSeen, releaseOpenSeen, releaseSeen, resetSeenVisit } from "./seen-rows";
@@ -1381,6 +1381,21 @@ export function savePins(pins: AgentPins): Promise<void> {
   return save("pins", "/pins", pins, pinsSaves);
 }
 
+/** Older hubs have no exact lookup. A filtered or grouped list may be the only view with a newer
+ *  row for an open chat. Read its mounted source on demand, without retaining the list's data. */
+type AgentRowSource = () => Session | undefined;
+const mountedAgentRows = new Map<string, Set<AgentRowSource>>();
+
+export function mountAgentRowSource(id: string, read: AgentRowSource): () => void {
+  const sources = mountedAgentRows.get(id) ?? new Set<AgentRowSource>();
+  sources.add(read);
+  mountedAgentRows.set(id, sources);
+  return () => {
+    sources.delete(read);
+    if (!sources.size && mountedAgentRows.get(id) === sources) mountedAgentRows.delete(id);
+  };
+}
+
 /** The menu may have opened on a filtered row outside the retained detail cache. Prefer the
  *  latest hub state if a list refresh or a push arrived while the menu was open. */
 const seenRowTime = (s: Session) => Math.max(timeMs(s.updated_at), timeMs(s.state_since), timeMs(s.seen_at));
@@ -1392,23 +1407,33 @@ function currentAgentMenuRows(shown: Session): Session[] {
   // getSession prefers a retained detail even when one of the lists has received a newer row.
   const listed = runtimeAgents.getSnapshot().rows.find(matches);
   const summary = state.sessionSummaries.find(matches);
-  return [current, listed, summary, shown].filter((row): row is Session => row !== undefined);
+  const mounted = Array.from(mountedAgentRows.get(runtimeIdentity(shown)) ?? [], (read) => read());
+  return [current, listed, summary, shown, ...mounted].filter((row): row is Session => row !== undefined);
 }
 
-export function canInterruptAgentRow(shown: Session): boolean {
+function activityTimeNs(s: Session): bigint {
+  const updated = timeNs(s.updated_at) ?? 0n;
+  const since = timeNs(s.state_since) ?? 0n;
+  return updated > since ? updated : since;
+}
+
+export function canInterruptAgentRow(shown: Session, allowAwaiting = false): boolean {
   const candidates = currentAgentMenuRows(shown).map((s) => {
     // A read receipt does not grant control. Compare the activity clocks at full wire precision.
-    const updated = timeNs(s.updated_at) ?? 0n;
-    const since = timeNs(s.state_since) ?? 0n;
-    return { s, at: updated > since ? updated : since };
+    return { s, at: activityTimeNs(s) };
   });
   const newest = candidates.reduce((latest, row) => row.at > latest ? row.at : latest, 0n);
   // A conflicting row at the same instant can veto an interrupt.
-  return candidates.every(({ s, at }) => at < newest || sessionMenuActions(s).includes("stop"));
+  return candidates.every(({ s, at }) => at < newest || (allowAwaiting ? sessionCan(s, "interrupt") : sessionMenuActions(s).includes("stop")));
 }
 
 export function markRowSeen(shown: Session) {
-  const s = currentAgentMenuRows(shown).reduce((latest, row) => seenRowTime(row) > seenRowTime(latest) ? row : latest);
+  const newest = currentAgentMenuRows(shown).map((s) => {
+    const activity = activityTimeNs(s);
+    const receipt = timeNs(s.seen_at) ?? 0n;
+    return { s, at: activity > receipt ? activity : receipt };
+  }).reduce((latest, row) => row.at > latest.at || (row.at === latest.at && !unseen(row.s)) ? row : latest);
+  const s = newest.s;
   if (s.deleted || !unseen(s)) return;
   const cached = state.sessions[s.machine_id]?.find((row) => row.session_id === s.session_id);
   // A newer list summary updates only an existing detail's list fields. Keep paged-only summaries off the detail cache.
@@ -2443,6 +2468,7 @@ export function reset() {
   askedForUnlisted.clear(); // the conversations asked about were the old login's
   resetAgents();
   rowHints.clear();
+  mountedAgentRows.clear();
   taskRowsAsked.clear();
   listedFull.clear();
   closedEpoch++;

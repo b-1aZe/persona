@@ -56,6 +56,13 @@ describe("marking fallback-only sessions seen", () => {
     expect(getState().sessions.demo).toBeUndefined(); // a paged summary is not a complete chat detail
   });
 
+  it("does not mark a paged row already seen a nanosecond after its retained unread detail", () => {
+    const cached = row("recent", { updated_at: "2025-12-31T00:00:00.123000001Z" });
+    upsertSession(cached);
+    markRowSeen({ ...cached, state: "idle", updated_at: "2025-12-31T00:00:00.123000002Z" });
+    expect(api).not.toHaveBeenCalled();
+  });
+
   it("uses the newer row when a paged menu and the retained detail disagree", () => {
     const fresh = row("new-turn", { waiting: false, updated_at: "2025-12-31T00:00:00Z" });
     upsertSession(row("new-turn", { state: "working", updated_at: "2025-12-29T00:00:00Z", agent_name: "Retained name" }));

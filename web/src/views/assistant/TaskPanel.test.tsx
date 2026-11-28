@@ -159,6 +159,18 @@ describe("Agent panel new-window destination", () => {
     await expectSessionWindow();
   });
 
+  it("keeps a single-Agent panel's window command first, with only one destructive action on top", async () => {
+    const session: Session = { ...first, status: "idle", state: "idle" };
+    await open({ kind: "agent", mid: session.machine_id, sid: session.session_id }, task(), [session]);
+    await clickMore();
+    const labels = () => [...document.querySelectorAll('[role="menuitem"]')].map((row) => row.querySelector("span")?.textContent);
+    const top = [t("assistant-taskpanel.open_in_new_window"), t("chat-chatview.rename"), t("chat-chatview.pin"), t("sidebar.more"), t("agentmenus.close")];
+    expect(labels()).toEqual(top);
+    await clickMenu(t("sidebar.more"));
+    expect(labels().slice(top.length)).toContain(t("chat-chatview.delete_chat"));
+    expect(new Set(labels()).size).toBe(labels().length);
+  });
+
   it("follows the Agent selected in a multi-Agent task, including its machine", async () => {
     await open({ kind: "task", todo: "example-task" }, task([first, second]), [first, second]);
     await expectSessionWindow();
