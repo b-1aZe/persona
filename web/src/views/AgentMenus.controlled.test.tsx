@@ -241,6 +241,18 @@ describe("AgentMenus controlled mode", () => {
     expect(items.map((item) => item.key)).not.toContain("stop");
   });
 
+  it("rechecks the Agent before dispatching a row interrupt", async () => {
+    const busy = baseSession({ state: "working", status: "working", capabilities: { interrupt: true } });
+    const items = agentRowMenuItems(busy, { muted: false, pinned: false, features: [], onRename: vi.fn(), onDelete: vi.fn() });
+    const stop = items.find((item) => item.key === "stop")!;
+    mocks.currentAgentMenuRow.mockReturnValueOnce(baseSession());
+    await stop.onSelect();
+    expect(mocks.interruptAgent).not.toHaveBeenCalled();
+    mocks.interruptAgent.mockResolvedValueOnce(undefined);
+    await stop.onSelect();
+    expect(mocks.interruptAgent).toHaveBeenCalledExactlyOnceWith(busy.machine_id, busy.session_id);
+  });
+
   it("runs the controlled row's primary Interrupt and Mark as Seen callbacks for the selected Agent", async () => {
     const busy = baseSession({ state: "working", status: "working", capabilities: { interrupt: true, close: true, rename: true } });
     const onInterrupt = vi.fn();
