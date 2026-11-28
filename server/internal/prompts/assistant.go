@@ -743,6 +743,7 @@ func RenderAskTodoAnswer(a AskTodoAnswer) string { return render("assistant/ask_
 // (Spoke: no to-do, no default), or, with none of them, that the card ended unanswered. The questions and answers
 // are escaped by the caller.
 type AskLater struct {
+	Internal  bool   // supervisor decision, never attributed to the owner
 	When      string // when it was asked, MM-DD HH:MM in the user's zone
 	Questions []string
 	Answers   []AskTodoChoice
@@ -932,6 +933,8 @@ func RenderInboxToAgent(d InboxToAgent) string { return render("assistant/inbox_
 type SuperviseParked struct {
 	Reason, WaitingOn, Until string
 	Count, Left              int
+	// Resent: a parked_due told again because no task_review followed the earlier reminder; 1 is the first resend.
+	Resent int
 }
 
 // SuperviseDecision is a decision a task's supervisor put to the owner (task_review needs_user), as a supervision

@@ -19,7 +19,7 @@ import (
 
 type taskWorkspaceStore interface {
 	TaskWorkspace(context.Context, string, string) (*taskworkspace.Record, error)
-	BeginTaskWorkspace(context.Context, string, string, string) (*taskworkspace.Record, error)
+	BeginTaskWorkspace(context.Context, string, string, string, ...*taskworkspace.Record) (*taskworkspace.Record, error)
 	MutateTaskWorkspace(context.Context, string, string, int64, string, string) (*taskworkspace.Record, error)
 	SaveTaskWorkspaceResult(context.Context, string, string, int64, taskworkspace.Record) (*taskworkspace.Record, error)
 }
@@ -67,9 +67,28 @@ func (s *Service) backendWorkspaceCall(ctx context.Context, method string, req t
 	return result, nil
 }
 
+func (s *Service) backendWorkspaceCapabilities(ctx context.Context, machine, op, cwd string) (taskworkspace.Capabilities, error) {
+	var support taskworkspace.Capabilities
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err := s.call(ctx, machine, taskworkspace.MethodPrefix+"capabilities", nil, &support)
+	if err == nil {
+		return support, nil
+	}
+	code := "node_unavailable"
+	if strings.Contains(err.Error(), "unknown method "+taskworkspace.MethodPrefix) {
+		code = "unsupported"
+	}
+	return support, taskworkspace.Failure(code, "capability", op, "", cwd)
+}
+
 // PrepareBackendWorkspace consumes an already saved naming plan. It never
 // starts an Engine, edits a legacy workspace or changes the task's business stage.
 func (s *Service) PrepareBackendWorkspace(ctx context.Context, id, op string) (*taskworkspace.Record, error) {
+	return s.prepareBackendWorkspace(ctx, id, op)
+}
+
+func (s *Service) prepareBackendWorkspace(ctx context.Context, id, op string, replacing ...*taskworkspace.Record) (*taskworkspace.Record, error) {
 	st, err := s.backendWorkspaceStore()
 	if err != nil {
 		return nil, err
@@ -88,20 +107,14 @@ func (s *Service) PrepareBackendWorkspace(ctx context.Context, id, op string) (*
 	if _, ok := s.device(ctx, plan.Source.MachineID); !ok {
 		return nil, taskworkspace.Failure("node_unavailable", "plan", op, "", "")
 	}
-	probeCtx, cancelProbe := context.WithTimeout(ctx, 15*time.Second)
-	var support struct {
-		Capability string `json:"capability"`
-	}
-	err = s.call(probeCtx, plan.Source.MachineID, "task.workspace.capabilities", nil, &support)
-	cancelProbe()
+	support, err := s.backendWorkspaceCapabilities(ctx, plan.Source.MachineID, op, "")
 	if err != nil {
-		code := "node_unavailable"
-		if strings.Contains(err.Error(), "unknown method task.workspace.") {
-			code = "unsupported"
-		}
-		return nil, taskworkspace.Failure(code, "capability", op, "", "")
+		return nil, err
 	}
-	if support.Capability != taskworkspace.Capability {
+	if support.Capability != taskworkspace.Capability || len(plan.Repositories) == 0 && !support.EmptyRepositories {
+		return nil, taskworkspace.Failure("unsupported", "capability", op, "", "")
+	}
+	if slices.ContainsFunc(plan.Source.Repositories.Repositories, func(repo repository.PreparationRepository) bool { return repo.Local != nil }) && !support.LocalGit {
 		return nil, taskworkspace.Failure("unsupported", "capability", op, "", "")
 	}
 	current, err := st.TaskWorkspace(ctx, id, "")
@@ -117,7 +130,7 @@ func (s *Service) PrepareBackendWorkspace(ctx context.Context, id, op string) (*
 			return settled, nil
 		}
 	}
-	r, err := st.BeginTaskWorkspace(ctx, id, op, s.managerIdentity())
+	r, err := st.BeginTaskWorkspace(ctx, id, op, s.managerIdentity(), replacing...)
 	if err != nil {
 		return nil, err
 	}

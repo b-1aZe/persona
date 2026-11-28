@@ -3,7 +3,7 @@
 // {id, authToken, method, params}, answered by one JSON line {id, ok, result | error{code, message}} (slow calls send
 // {"_keepalive": true} lines first). The socket and its token are in orca-runtime.json in Orca's data directory; the
 // token changes every time Orca starts. Only unary methods work on this socket (streaming ones need Orca's paired
-// WebSocket). See docs/plans/plan-orca-support.md "Orca source".
+// WebSocket). See docs/integrations/orca.md "Orca source".
 //
 // Orca being absent (not installed, not running) is normal: calls fail fast with ErrNotRunning and log nothing until
 // it was seen once.
@@ -48,7 +48,8 @@ type Client struct {
 	// logged. nil: silent. The auth token is never logged.
 	Log func(format string, args ...any)
 	// ReadOnly refuses, without sending, every method that could change Orca: only status.get, terminal.list,
-	// worktree.ps, terminal.read and terminal.agentStatus go out (live checks against the user's own Orca).
+	// worktree.ps, terminal.read, terminal.agentStatus and terminal.inspectProcess go out (live checks against the
+	// user's own Orca).
 	ReadOnly bool
 
 	seq   atomic.Int64
@@ -300,7 +301,7 @@ func gaveUp(ctx context.Context) bool {
 
 // readOnlyMethods are the calls a ReadOnly client makes.
 var readOnlyMethods = map[string]bool{"status.get": true, "terminal.list": true, "worktree.ps": true, "terminal.read": true,
-	"terminal.agentStatus": true}
+	"terminal.agentStatus": true, "terminal.inspectProcess": true}
 
 func (c *Client) call(ctx context.Context, timeout time.Duration, method string, params, out any, check bool) error {
 	if c.ReadOnly && !readOnlyMethods[method] {
