@@ -98,7 +98,15 @@ func TestStopAndRetireClassifyNonHexRuntimeSessions(t *testing.T) {
 		return h1 != nil && k1 && h2 != nil && k2 && h3 != nil && k3
 	})
 
-	for _, id := range []string{agyID, dshID, paseoID} {
+	for _, tc := range []struct {
+		id        string
+		closeable bool
+	}{
+		{id: agyID},
+		{id: dshID},
+		{id: paseoID, closeable: true},
+	} {
+		id := tc.id
 		t.Run("stop/"+id, func(t *testing.T) {
 			_, err := nodeCall(t, n, "session.stop", map[string]any{"session_id": id})
 			if code, _ := refusalOf(t, err); code != noTerminal {
@@ -112,7 +120,22 @@ func TestStopAndRetireClassifyNonHexRuntimeSessions(t *testing.T) {
 			}
 		})
 		t.Run("retire/"+id, func(t *testing.T) {
-			_, err := nodeCall(t, n, "session.retire", map[string]any{"session_id": id, "close_terminal": true})
+			raw, err := nodeCall(t, n, "session.retire", map[string]any{"session_id": id, "close_terminal": true})
+			var res struct {
+				Closed bool `json:"closed"`
+			}
+			if tc.closeable {
+				if err == nil {
+					err = json.Unmarshal(raw, &res)
+				}
+				if err != nil || !res.Closed {
+					t.Fatalf("session.retire(%s) = %v, %v, want closed", id, res, err)
+				}
+				if got := len(paseo.got("session.close")); got != 1 {
+					t.Fatalf("runtime session.close calls = %d, want 1", got)
+				}
+				return
+			}
 			if code, _ := refusalOf(t, err); code != notRetirable {
 				t.Fatalf("session.retire(%s) = code %q (err=%v), want %q", id, code, err, notRetirable)
 			}
@@ -148,6 +171,44 @@ func TestStopAndRetireClassifyNonHexRuntimeSessions(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRetireRuntimeSessionRefusesDeclaredTerminal(t *testing.T) {
+	n, _ := runtimeNode(t)
+	rt := dialRuntime(t, n, map[string]any{
+		"runtime": "paseo",
+		"name":    "Paseo",
+		"version": "test",
+		"caps":    map[string]any{"start": true, "send": true, "interrupt": true, "close": true},
+	})
+	const id = "paseo-terminal-session"
+	if err := rt.peer.Notify("runtime.sessions", map[string]any{
+		"sessions": []proto.Session{{SessionID: id, Title: "Terminal runtime", Cwd: "/work", Status: proto.StatusIdle}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the runtime row", func() bool {
+		h, _, known := n.runtimes.belongs(id)
+		return h != nil && known
+	})
+	h, _, _ := n.runtimes.belongs(id)
+	canClose := true
+	h.mu.Lock()
+	for i := range h.sessions {
+		if h.sessions[i].SessionID == id {
+			h.sessions[i].Capabilities = &proto.SessionCapabilities{Terminal: true, Close: &canClose}
+		}
+	}
+	h.mu.Unlock()
+
+	if _, err := nodeCall(t, n, "session.retire", map[string]any{"session_id": id, "close_terminal": true}); err == nil {
+		t.Fatal("a runtime session declaring a terminal was retired")
+	} else if code, _ := refusalOf(t, err); code != notRetirable {
+		t.Fatalf("session.retire code = %q (err=%v), want %q", code, err, notRetirable)
+	}
+	if got := rt.got("session.close"); len(got) != 0 {
+		t.Fatalf("runtime session.close calls = %s, want none", got)
+	}
 }
 
 // An older runtime session that dropped off runtime.sessions is still resolved via connected runtimes on session.stop:

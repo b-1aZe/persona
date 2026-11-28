@@ -79,7 +79,7 @@ func (s *Service) setSessions(machine string, list []proto.Session) {
 			s.suggestDrop(machine, sess.SessionID) // a new turn: the last one's suggestion goes, a call on its way is cancelled
 			s.turnsBook().working(key, now)
 			s.replyWorked(machine, sess.SessionID) // answered: a question it asks next is a new one (agents_reply.go)
-			ref, row := SessionRef{MachineID: machine, SessionID: sess.SessionID}, startRow{Rev: sess.Rev, At: sess.UpdatedAt}
+			ref, row := SessionRef{MachineID: machine, SessionID: sess.SessionID}, startRow{Rev: sess.Rev, At: sess.UpdatedAt, NativeLoop: sess.Loop != nil || was.NativeLoop}
 			// Every non-working -> working edge except unblocking an interactive blocked turn (StatusBlocked)
 			// or recovering from a transient Unknown blip during the same turn (wasWorking) starts a new
 			// clarification answer turn, including reaped/stopped/reopened StatusOffline sessions.
@@ -204,6 +204,7 @@ func (s *Service) reconnectedTurnEnd(machine string, sess proto.Session) {
 // turnPrev is what setSessions reads of a session's previous row: the turn's starts and ends are against it. Only
 // these fields, not the whole row: a session is about 1.5 KB, and the manager would keep a copy of every list.
 type turnPrev struct {
+	NativeLoop bool
 	A2AIdle    bool
 	Status     string
 	WokeByTask bool
@@ -247,7 +248,7 @@ func (s *Service) fleetKeep(machine string, list []proto.Session, conn time.Time
 	next := make(map[string]turnPrev, len(list))
 	for i := range list { // by index: a range value copies every (large) session it passes
 		sess := &list[i]
-		p := turnPrev{Status: sess.Status, WokeByTask: sess.WokeByTask, Rev: sess.Rev,
+		p := turnPrev{Status: sess.Status, NativeLoop: sess.Loop != nil, WokeByTask: sess.WokeByTask, Rev: sess.Rev,
 			LastText: sess.LastText, UpdatedAt: sess.UpdatedAt, Launcher: sess.Launcher, A2AIdle: a2aIdle(*sess)}
 		if sess.Status == proto.StatusUnknown {
 			if was := before[sess.SessionID]; was.Status == proto.StatusWorking || was.WorkingBeforeUnknown {
@@ -431,8 +432,9 @@ func (s *Service) decoratedApart(machine string, mark uint64) ([]proto.Session, 
 		s.logf("load agent archives: %v", err)
 	}
 	shown, archived := a.apart()
-	// The archived rows are not listed in a fold (foldSessions): the visible ones fold as in the whole list.
-	s.foldInventory(machine, shown)
+	// The archived rows are not listed in a fold (foldSessions): the visible ones fold as in the whole list,
+	// while archived stays in the subagent negative-cache retention set.
+	s.foldInventoryWithRetained(machine, shown, archived)
 	s.foldSubset(machine, archived.rows)
 	return shown, archived
 }
@@ -660,6 +662,7 @@ func (s *Service) decorateInventory(machine string, list []proto.Session, comple
 			list[i].StartError = startErrorText(lang, cmp.Or(m.Name, machine), list[i])
 		}
 		list[i].State, list[i].BackgroundWorking = stateWithBackground(agentState(list[i], list[i].SeenAt), list[i])
+		list[i].State = logicalDeliveryState(list[i]) // never idle while its input has not gone in (logical_undelivered.go)
 		list[i].BackgroundWaiting = backgroundWaiting(list[i])
 		if !list[i].BackgroundWorking && !stalledAfterTurn(list[i]) || backgroundIsWork(list[i]) {
 			list[i].BackgroundStalledSince = 0 // only background commands that are all there is to the work can have stalled

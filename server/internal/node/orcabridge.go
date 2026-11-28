@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ import (
 	"github.com/nwverse/persona/server/internal/rpc"
 )
 
-// Orca's structured sessions (docs/plans/plan-orca-support.md "Structured sessions"): Orca's own chats around Claude
+// Orca's structured sessions (docs/integrations/orca.md "Structured sessions"): Orca's own chats around Claude
 // Code, Codex and its other providers, with no terminal, so not the Orca host's (hostorca.go lists terminals). While
 // the machine's engine is Orca the node runs a bridge for them in its own process: a runtime (runtimes.go) on one end
 // of a pipe into the runtime host, Orca's agentSession.* on the other. The bridge lists every local chat (worktree.ps,
@@ -126,6 +127,8 @@ func (rh *RuntimeHost) runOrcaBridge(ctx context.Context, c *orcart.Client) erro
 		cancel()
 	}()
 	b := newOrcaBridge(c, bridgeEnd, rh.logger.Printf)
+	b.onBotHomes = rh.setOrcaBotHomes
+	defer rh.setOrcaBotHomes(nil) // the bridge's connection ended: nothing folds until it reads the bots again
 	rh.orca.mu.Lock()
 	rh.orca.instance = b.instance
 	rh.orca.mu.Unlock()
@@ -163,6 +166,23 @@ type orcaBridge struct {
 	book    *orcaBook
 	st      *orcart.Status // the runtime's status.get last read (orcabridge_controls.go status), and when
 	stAt    time.Time
+	// Starting chats (orcabridge_start.go): the agents Orca found installed and runs as chats and when, the launchers
+	// last pushed, the chats Persona started that Orca does not list yet (by Orca session id), and whether the rows go
+	// to the node again on the next refresh even if unchanged (a start's answer stood in for one); the providers whose
+	// chat Orca refused for a missing chat runtime (noChat), and the chats open now by provider (Orca session id → its
+	// row's updatedAt), which tell when to offer them again.
+	agents   []string
+	agentsAt time.Time
+	launches string
+	starts   map[string]orcaStarted
+	repush   bool
+	noChat   map[string]map[string]int64
+	openRevs map[string]map[string]int64
+
+	// bots is the bridge's part for Orca's bots (orcabots.go): their item cards and what folds under their Home Chats;
+	// onBotHomes hears of a fold that changed (nil: nobody listens).
+	bots       orcaBotsState
+	onBotHomes func(*orcaBotHomes)
 }
 
 // orcaHead is what the bridge knows of one Orca session beyond its worktree.ps row.
@@ -206,7 +226,7 @@ func (b *orcaBridge) run(ctx context.Context, version string) error {
 	hello := map[string]any{"runtime": orcaRuntimeID, "name": proto.EngineNames[proto.EngineOrca], "agent": "claude",
 		"version": version, "instance": b.instance,
 		"caps": map[string]any{"send": true, "interrupt": true, "close": true, "modes": true, "model": true, "rename": true,
-			"rewind": true, "seen": true}}
+			"rewind": true, "seen": true, "start": true}}
 	if err := b.peer.Call(ctx, "runtime.hello", hello, nil); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
@@ -248,17 +268,23 @@ func (b *orcaBridge) refresh(ctx context.Context) {
 	trees = b.trees
 	b.mu.Unlock()
 	tabs := b.chatTabs(ctx, running)
+	chats := orcaOpenChats(trees, tabs)
 	var st *orcart.Status
+	var agents []string // the agents Orca found installed and runs as chats (orcabridge_start.go)
 	if running {
 		st = b.status(ctx)
+		agents = b.installed(ctx)
 	}
+	agents = b.chatsOffered(running, agents, chats) // the providers it starts chats of: not one whose chat runtime it lacks
+	launches := st.Has(orcart.CapChatLaunch)
 
 	now := time.Now()
 	rows := []map[string]any{}
 	orcaOf := map[string]string{}
-	waiting := map[string]string{} // Orca session id → Persona session id, sessions with a prompt pending
-	open := map[string]bool{}      // Orca session ids of the chats open in Orca
-	for _, c := range orcaOpenChats(trees, tabs) {
+	waiting := map[string]string{}         // Orca session id → Persona session id, sessions with a prompt pending
+	open := map[string]bool{}              // Orca session ids of the chats open in Orca
+	opts := map[string][]*orcart.Options{} // the open chats' options, by provider: their launchers' models
+	for _, c := range chats {
 		open[c.orca] = true
 		h := b.head(ctx, c.orca, c.rev)
 		if h == nil {
@@ -270,12 +296,25 @@ func (b *orcaBridge) refresh(ctx context.Context) {
 		}
 		row := orcaRow(c, e, h)
 		orcaControls(row, c.agent, h.opts, st)
+		if launches && slices.Contains(agents, c.agent) && slices.Contains(orcaChatProviders, c.agent) {
+			row["launcher"] = orcaLauncherPrefix + c.agent // its model picker lists Orca's models (orcaLaunchers)
+		}
+		if strings.HasPrefix(c.orca, orcaStartPrefix) {
+			row["started_by_persona"] = true
+		}
 		rows = append(rows, row)
 		orcaOf[e.Persona] = c.orca
+		opts[c.agent] = append(opts[c.agent], h.opts)
 		if row["status"] == proto.StatusBlocked {
 			waiting[c.orca] = e.Persona
 		}
 	}
+	started, startedOrca := b.startedRows(orcaOf, now)
+	for i, row := range started {
+		rows = append(rows, row)
+		orcaOf[row["session_id"].(string)] = startedOrca[i]
+	}
+	b.pushLaunchers(orcaLaunchers(agents, st, opts))
 	closed := map[string]bool{}
 	for _, e := range b.book.closed(open, orcaOf, now) {
 		rows = append(rows, orcaClosedRow(e))
@@ -285,6 +324,9 @@ func (b *orcaBridge) refresh(ctx context.Context) {
 	b.book.flush(now, false)
 	b.mu.Lock()
 	b.orcaOf, b.closed = orcaOf, closed
+	if b.repush {
+		b.pushed, b.repush = "", false
+	}
 	b.mu.Unlock()
 	if raw, err := json.Marshal(rows); err == nil && string(raw) != b.pushed {
 		// unlisted_transcripts: none. The bridge lists the chats Orca closed itself (orcaClosedRow), so none of their
@@ -294,6 +336,7 @@ func (b *orcaBridge) refresh(ctx context.Context) {
 		}
 	}
 	b.prompts(ctx, waiting)
+	b.botsTick(ctx, chats, orcaOf, closed)
 }
 
 // chatTabs are the chat tabs, read again every orcaTabsPoll (the last ones meanwhile); none from a host without them.
@@ -868,6 +911,8 @@ func (b *orcaBridge) request(ctx context.Context, method string, params json.Raw
 	switch method {
 	case "session.watch", "session.unwatch":
 		return ok, nil // a transcript is the node's to follow; a journal's rows come with the row's rev
+	case "session.start": // a new chat: no Orca session yet (orcabridge_start.go)
+		return b.start(ctx, params)
 	}
 	b.mu.Lock()
 	orca, closed := b.orcaOf[p.SessionID], b.closed[p.SessionID]
@@ -932,7 +977,8 @@ func (b *orcaBridge) request(ctx context.Context, method string, params json.Raw
 		}
 		err = b.seen(ctx, orca)
 	default:
-		return nil, &rpc.Error{Code: "unsupported", Message: "unsupported: " + method}
+		// The words stay what they were; the hub words it by its reason (apierr's bridgeReasonKeys, #17057).
+		return nil, &rpc.Error{Code: "unsupported", Message: "unsupported: " + method, Data: json.RawMessage(`{"reason":"orca_unsupported"}`)}
 	}
 	if err != nil {
 		return nil, orcaWriteErr(err)
@@ -979,7 +1025,11 @@ func orcaChatErr(code, reason string, data map[string]any, detail string) *rpc.E
 		data["detail"] = detail
 	}
 	raw, _ := json.Marshal(data)
-	return &rpc.Error{Code: code, Message: i18n.T(i18n.Default, "rpc-errors."+reason, i18n.Args{"detail": detail}), Data: raw}
+	args := i18n.Args{"detail": detail}
+	if program, _ := data["program"].(string); program != "" {
+		args["program"] = program // the provider its words name (orca_chat_runtime_missing), as the hub's do
+	}
+	return &rpc.Error{Code: code, Message: i18n.T(i18n.Default, "rpc-errors."+reason, args), Data: raw}
 }
 
 // orcaWriteErr is a failed write in the user's words: Orca is not running, turned it down (nothing happened), or it is

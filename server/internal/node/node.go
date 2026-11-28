@@ -116,8 +116,10 @@ type Node struct {
 	networkDiagAt func() machineNetworkOptions
 	// fileReadDeps replaces file.read's filesystem operations in tests.
 	fileReadDeps *fileReadDependencies
-	// repoMirrors coordinates opt-in managed bare mirrors under ~/.persona/repos/ (repo_mirror.go).
+	// repoMirrors coordinates managed bare mirrors under ~/.persona/repos/ (repo_mirror.go).
 	repoMirrors repoMirrorManager
+	// remoteFetches is shared by workspace preparation and mirror synchronization.
+	remoteFetches remoteFetchCoordinator
 	// usageMap is the disk usage map's scans, cache and trash record (machine_storage_usage.go), made on first use.
 	usageMap usageMapState
 
@@ -306,6 +308,7 @@ type Node struct {
 	agyIdleClock      func() time.Time // nil uses time.Now (tests override per-node)
 	agyIdlePolicy     *assistantwire.AgyIdleCompaction
 	agyIdleSessions   map[string]*agyIdleState
+	agyIdleInFlight   int
 	agyAttemptSeq     uint64
 	pendingIxSessions map[string]bool
 	// recoveries: a conversation's bounded model-failure recovery, surviving the process replaced by a model switch.
@@ -390,8 +393,16 @@ type Node struct {
 	previewOnce sync.Once
 
 	// hostAgents: each host's agents in its last answer (refreshHosts), kept for a host that does not answer.
-	hostAgents    map[string][]host.Agent
-	traexEvidence map[string]traexHostEvidence // same host snapshots, retained across partial refreshes
+	// Per-host snapshot sequence numbers and agentsGen keep delayed older snapshots from overwriting newer live state (#2133).
+	// agentsGen numbers each merge of hostAgents as it is taken; agentsCommitted is the newest one written into agents. A
+	// merge gives way only to a newer one already written, never to one still running (#17826).
+	hostAgents      map[string][]host.Agent
+	traexEvidence   map[string]traexHostEvidence // same host snapshots, retained across partial refreshes
+	hostSnapSeq     map[string]uint64
+	hostLayoutSeq   map[string]uint64
+	hostAgentsSeq   map[string]uint64
+	agentsGen       uint64
+	agentsCommitted uint64
 	// paneClaudes: when the outside-claude list first saw each claude whose environment names an engine pane, by pid
 	// (claudeInPane's grace while its engine has not reported it yet).
 	paneClaudes map[int]paneClaudeSeen
@@ -427,6 +438,8 @@ type Node struct {
 
 	// claudeV is claude's version as last asked (agentplugin.go).
 	claudeV claudeVersionCache
+	// engRep: the engines node.info said last, Orca's row as told since (orcaengine.go).
+	engRep engineReport
 	// resumeSignIn: launchers' sign-in per profile as last asked for a resume (assistant_resume_signin.go).
 	resumeSignIn resumeSignInCache
 
@@ -644,6 +657,7 @@ func (n *Node) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	}
 	n.cdirs.report = func(dirs []string) { _ = n.peer.Notify("claude.dirs", map[string]any{"dirs": dirs}) }
 	go n.watchClaudePlugin(ctx) // claudeplugin.go
+	go n.watchOrcaEngine(ctx)   // orcaengine.go
 	n.codices.report = func(cfg proto.CodexConfig) { _ = n.peer.Notify("codex.inventory", cfg) }
 	go n.runCodex(ctx)
 	var adopted []*assistantProc
@@ -1530,6 +1544,9 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			// PendingInteractionSessions: session IDs on this machine currently holding pending hub interaction cards
 			// (ask_user / approval), so idle auto-compaction does not compact sessions waiting on the user.
 			PendingInteractionSessions *[]string `json:"pending_interaction_sessions"`
+			// BotmuxOwnerUnionID: the BotMux Owner Union ID of Settings › Agents (hostbotmux_owner.go), "" for none;
+			// nil (an older hub, a call that says nothing of it) leaves it as it is.
+			BotmuxOwnerUnionID *string `json:"botmux_owner_union_id"`
 		}
 		if err := json.Unmarshal(params, &c); err != nil {
 			return nil, err
@@ -1547,7 +1564,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			n.hubPersonaContracts.Store(c.HubFeatures != nil && slices.Contains(*c.HubFeatures, nodeproto.PersonaContracts))
 			n.hubMCPWait.Store(c.HubFeatures != nil && slices.Contains(*c.HubFeatures, nodeproto.MCPWait))
 		}
-		if c.ClaudeDirs != nil || (c.Keep == nil && c.AgyIdleCompaction == nil && c.PendingInteractionSessions == nil) { // partial updates leave the directories
+		if c.ClaudeDirs != nil || (c.Keep == nil && c.AgyIdleCompaction == nil && c.PendingInteractionSessions == nil && c.BotmuxOwnerUnionID == nil) { // partial updates leave the directories
 			n.setKnownClaudeDirs(c.ClaudeDirs)
 		}
 		if c.ClaudeDirsBlocked != nil {
@@ -1568,6 +1585,9 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		}
 		if c.Botmux != nil {
 			n.useBotmux(*c.Botmux, false)
+		}
+		if c.BotmuxOwnerUnionID != nil {
+			n.setBotmuxOwner(*c.BotmuxOwnerUnionID)
 		}
 		if c.ClaudeStartDir != nil {
 			d := strings.TrimSpace(*c.ClaudeStartDir)
@@ -2449,11 +2469,24 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			}
 		}
 		over := n.turnOver(p.SessionID) // before the key: the Escape itself may end a turn
+		var qPath string
+		var qStat os.FileInfo
+		if !over {
+			if qPath = n.transcriptPath(p.SessionID); qPath != "" {
+				qStat, _ = os.Stat(qPath)
+			}
+		}
 		err := n.keys(ctx, p.SessionID, []string{"esc"}, "")
 		if err == nil && over && n.backgroundRuns(p.SessionID) {
 			// The Escape went to an idle prompt and the background work goes on: said, not claimed as an interruption
 			// (#10828). The key is pressed whatever this finds, so a turn that does run is never left running.
 			err = refusal(proto.CodeTurnOverBackground, i18n.T(i18n.From(ctx), "rpc-errors."+proto.CodeTurnOverBackground), nil)
+		} else if err == nil && !over && qPath != "" {
+			n.forgetMeta(qPath)
+			n.notifySessionsSoon()
+			if qStat != nil {
+				n.watchQueueSettle(qPath, qStat.Size(), qStat.ModTime())
+			}
 		}
 		return ok(err)
 	case "session.screen.before":
@@ -2741,11 +2774,11 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			limit = 80
 		}
 		if p.ThroughSeq > 0 { // a fold being opened: the lines it stands for
-			page, more := f.Range(p.FromSeq, p.ThroughSeq, 1000)
+			page, more, span := f.RangeSpan(p.FromSeq, p.ThroughSeq, 1000)
 			page = n.applyBotmuxTurns(ctx, p.SessionID, f, page, false)
 			n.toolViews.attach(p.SessionID, page, false, f)
 			n.ttft.annotate(p.SessionID, page, false)
-			return map[string]any{"items": items(page), "more": more}, nil
+			return withSpan(map[string]any{"items": items(page), "more": more}, span, true), nil
 		}
 		// Pages counted back from the end fold the agent's work for callers that ask (transcript.FoldWork).
 		fold := func(page []proto.Item) []proto.Item {
@@ -3379,7 +3412,7 @@ func (n *Node) info(ctx context.Context) proto.NodeInfo {
 		Version:            n.Version,
 		System:             n.system(ctx),
 		Engine:             n.engine(),
-		Engines:            n.engines(ctx, hv),
+		Engines:            n.engRep.said(n.engines(ctx, hv)),
 		EngineHosts:        &choice, // this node takes sets in engine.use (the hub then sends it hosts and default)
 		MachineUID:         n.uid,
 		BuiltinPrograms:    builtinProgramsInfo(),
@@ -3395,7 +3428,7 @@ func (n *Node) herdrRunning(ctx context.Context) (running, known bool) {
 	if !ok || h.c == nil {
 		return false, false
 	}
-	return herdrAlive(ctx, h.c.Socket), true
+	return herdrProbe(ctx, h.c.Socket)
 }
 
 func claudeVersion(ctx context.Context) string {

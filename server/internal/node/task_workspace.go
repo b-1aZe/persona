@@ -15,16 +15,18 @@ import (
 
 	"github.com/nwverse/persona/server/internal/devicewire"
 	"github.com/nwverse/persona/server/internal/link"
+	"github.com/nwverse/persona/server/internal/osproc"
 	"github.com/nwverse/persona/server/internal/taskworkspace"
 	"github.com/nwverse/persona/server/internal/workspacenaming"
 )
 
 type workspaceJournal struct {
 	taskworkspace.Record
-	Identities       map[string]string `json:"identities"`
-	Tombstones       []string          `json:"tombstones"`
-	InFlight         bool              `json:"in_flight"`
-	LocalGitIdentity string            `json:"local_git_identity,omitempty"`
+	Identities           map[string]string `json:"identities"`
+	Tombstones           []string          `json:"tombstones"`
+	InFlight             bool              `json:"in_flight"`
+	LocalGitIdentity     string            `json:"local_git_identity,omitempty"`
+	LastGitStderrSummary string            `json:"last_git_stderr_summary,omitempty"`
 }
 type workspaceExecutor struct {
 	n                *Node
@@ -33,6 +35,7 @@ type workspaceExecutor struct {
 	locks            []*os.File
 	mirrorRepos      []string
 	mirrorTTLSeconds int
+	coldFetchTimeout time.Duration
 }
 
 var errWorkspaceSymlink = errors.New("symbolic link")
@@ -133,11 +136,15 @@ func (e *workspaceExecutor) claimDir(path string) error {
 // Each command is bounded, noninteractive, and stores no raw stderr or URL in an
 // error. The inherited locks outlive a crashed Node while Git is still running.
 func (e *workspaceExecutor) git(ctx context.Context, dir string, args ...string) (string, error) {
+	return e.gitWithTimeout(ctx, taskworkspace.GitTimeout, dir, args...)
+}
+
+func (e *workspaceExecutor) gitWithTimeout(ctx context.Context, timeout time.Duration, dir string, args ...string) (string, error) {
 	e.journal.InFlight = true
 	if err := e.save(); err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "--no-pager", "-c", "core.hooksPath=" + filepath.Join(filepath.Dir(e.path), "hooks"), "-c", "core.quotepath=off", "-c", "core.fsmonitor=false", "-c", "gc.auto=0"}, args...)...)
 	cmd.Env = taskworkspace.GitEnv(os.Environ())
@@ -145,19 +152,44 @@ func (e *workspaceExecutor) git(ctx context.Context, dir string, args ...string)
 		cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=")
 	}
 	cmd.WaitDelay = time.Second
+	stopGitTransportOnCancel(cmd, args)
 	workspaceInheritLocks(cmd, e.locks)
 	var out workspaceOutput
+	stderr := keptOutput{tailMost: workspaceGitStderrTail}
 	cmd.Stdout = &out
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &stderr
 	err := cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		e.journal.LastGitStderrSummary = workspaceGitStderrSummary(stderr.String())
+	}
 	e.journal.InFlight = false
 	if saveErr := e.save(); saveErr != nil {
 		return "", saveErr
 	}
 	if out.overflow {
-		return "", errors.New("output limit")
+		if err == nil {
+			err = errors.New("output limit")
+		}
+		return "", err
 	}
 	return strings.TrimSpace(out.String()), err
+}
+
+func stopGitTransportOnCancel(cmd *exec.Cmd, args []string) {
+	if len(args) == 0 || args[0] != "fetch" && args[0] != "ls-remote" {
+		return
+	}
+	// Stop the transport helper and pack writer before returning the slot.
+	cmd.SysProcAttr = osproc.GroupAttr()
+	cmd.Cancel = func() error {
+		if err := osproc.StopGroup(cmd.Process.Pid, true); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
 }
 
 type workspaceOutput struct {
@@ -243,12 +275,14 @@ func (n *Node) taskWorkspace(ctx context.Context, method string, raw, start json
 	if problem := n.workspacePlanPathProblem(preview.Plan); problem != nil {
 		return taskworkspace.Record{Error: taskworkspace.Failure(problem.Code, "validation", req.OperationID, problem.RepoID, req.Plan.RootPath)}, nil
 	}
+	remoteRepos := 0
 	for _, source := range req.Plan.Source.Repositories.Repositories {
 		// An existing receipt must remain inspectable and cleanable if the source
 		// checkout disappears. The local store is attested before any Git use.
 		if source.Local != nil {
 			continue
 		}
+		remoteRepos++
 		if !n.workspaceSourceAllowed(source) {
 			return taskworkspace.Record{Error: taskworkspace.Failure("source_invalid", "validation", req.OperationID, source.RepoID, "")}, nil
 		}
@@ -392,7 +426,11 @@ func (n *Node) taskWorkspace(ctx context.Context, method string, raw, start json
 		if j.Cleanup != nil {
 			return e.fail("resource_conflict", "prepare", "", j.Plan.RootPath), nil
 		}
-		result := e.prepare(ctx)
+		// The Node RPC context may have no deadline. Bound preparation,
+		// including time queued for network Git, with the shared RPC budget.
+		prepareCtx, cancel := context.WithTimeout(ctx, taskworkspace.PrepareTimeout(remoteRepos))
+		defer cancel()
+		result := e.prepare(prepareCtx)
 		if err = e.save(); err != nil {
 			return nil, err
 		}
@@ -494,9 +532,15 @@ func (e *workspaceExecutor) adopt(ctx context.Context, req taskworkspace.Request
 	j.Error = nil
 	return e.save()
 }
+
+func (e *workspaceExecutor) privateCommonDir(repoID string) string {
+	return filepath.Join(filepath.Dir(e.path), "git", taskworkspace.Hash(repoID)+".git")
+}
+
 func (e *workspaceExecutor) prepare(ctx context.Context) taskworkspace.Record {
 	j := &e.journal
 	j.State = "preparing"
+	j.LastGitStderrSummary = ""
 	if !e.owned(j.Plan.RootPath) {
 		if len(j.Plan.Repositories) == 0 && j.Identities[j.Plan.RootPath] != "" {
 			return e.fail("identity_mismatch", "reserve", "", j.Plan.RootPath)
@@ -509,7 +553,7 @@ func (e *workspaceExecutor) prepare(ctx context.Context) taskworkspace.Record {
 		i := slices.IndexFunc(j.Repositories, func(r taskworkspace.Instance) bool { return r.RepoID == p.RepoID })
 		if i < 0 {
 			input := j.Plan.Source.Repositories.Repositories[index]
-			common := filepath.Join(filepath.Dir(e.path), "git", taskworkspace.Hash(p.RepoID)+".git")
+			common := e.privateCommonDir(p.RepoID)
 			if input.Local != nil {
 				common = input.Local.CommonDir
 			}
