@@ -4,7 +4,7 @@ import { useAssistantTitle, useManagerOffline } from "../ManagerParts";
 import { defaultManager, LinkManager, useShownManager } from "../../lib/manager-choice";
 import { decisionLaterKey } from "../../lib/assistant-entries";
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, errorText, pastHub, sessionPath } from "../../lib/api";
+import { api, ApiError, errorText, sessionPath } from "../../lib/api";
 import { attentionReason, externalLink, failureReason, isStoppedAgent, resumeCommand, sessionCan, sessionCanRename, sessionDisplayTab, sessionMenuActions, sourceSubtitle, sessionTitle, sessionTitleDetail, shortPath, activityOf, stateOf, tabLabel, uuid } from "../../lib/format";
 import { useHerdrTabName } from "../../lib/agents-display";
 import { conversationPage } from "../../lib/conversation-page";
@@ -13,18 +13,18 @@ import { canShowTerminal, composerSlot, otherView, terminalJump, terminalWaits, 
 import { invalidateOverviewPanel } from "../../lib/use-shortcuts";
 import { resumeInTerminal, terminalResume } from "../../lib/agent-resume";
 import { openLink } from "../../lib/links";
-import { getPanel, openPanel, togglePanel, usePanel, useSidePanelBack } from "../../lib/panel";
+import { closePanel, getPanel, openPanel, togglePanel, usePanel, useSidePanelBack } from "../../lib/panel";
 import { backgroundPanelOf, isWorkflowsCommand, latestWorkflowRun, openBackgroundPanel, provideBackgroundChat, WORKFLOWS_COMMAND } from "../../lib/background-panel";
 import { machineWithHub } from "../../lib/mesh";
 import { sidebarRail, sidebarShown, useLayout } from "../../lib/layout";
 import { hasModes, isMuted, listedModesOf, toggleMute } from "../../lib/session-actions";
-import { flipPin } from "../../lib/agent-actions";
+import { canMarkAgentSeen, flipPin, interruptAgent } from "../../lib/agent-actions";
 import { isPinned } from "../../lib/pins";
 import { acknowledgeLaunch } from "../../lib/new-agent";
 import { useRuntimeSession } from "../../lib/runtime-session";
 import { SessionDetailNotice } from "../../ui/SessionDetailNotice";
 import { isBackgroundSupervisor } from "../../lib/background-supervisor";
-import { getSession, getState, hubHas, listenSession, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
+import { getSession, getState, hubHas, listenSession, markSeenLocally, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
 import { useStoreRows } from "../../lib/store-rows";
 import { useCodexThread, waitsForFirstMessage } from "../../lib/codex-waiting";
 import { foldRows } from "../../lib/folded-rows";
@@ -38,7 +38,7 @@ import { AGENT_MESSAGE_HOLD_FEATURE, assertDelivered, isKept, keptBubble, showKe
 import { lazyPage } from "../../lib/lazy-page";
 import { acceptOutgoing, forgetOutgoing, inSendOrder, keepFailed, keepOutgoing, noteWritten, outboxKey, placeFailed, registerOutboxRecheck, relayNotice, restoreOutbox, retryOutbox, SENT_GRACE_MS, settleOutbox, type DeliveryReply } from "../../lib/outbox";
 import { apiOp } from "../../lib/ops";
-import { beginMessageSend, observeMessageItems, settleMessageEcho, stopMessageFeedback, useMessageFeedback } from "../../lib/message-send";
+import { beginMessageSend, observeMessageItems, settleMessageEcho, useMessageFeedback } from "../../lib/message-send";
 import { conversationKey, pickedLauncher, pickedModel, usePickedLauncher } from "../../lib/assistant-chat";
 import { splitSkillDraft } from "../../lib/skill-mentions";
 import { openAsk, unlinkAgentFromTodo, waitsForOwner } from "../../lib/todos";
@@ -49,7 +49,7 @@ import { sendDraft, type CommentImagePicker } from "../../lib/drafts";
 import { chatLines, freshWords, isUserInput, openRecap, parseUserText, segments, type ChatLine, type UserMessage } from "../../lib/turns";
 import { foldsBackgroundRounds, relayNeedsAttention } from "../../lib/background-fold";
 import type { Interaction, Item, Session, Subagent } from "../../lib/types";
-import { REVIEW_FEATURE } from "../../lib/types";
+import { REVIEW_FEATURE, SESSION_REVIEW_FEATURE } from "../../lib/types";
 import { anchoredScroll, followsAgain, isScrollbarPress, jumpLabel, leavesOnKey, leavesOnScrollbarDrag, leavesOnTouch, leavesOnWheel, followsAfterUnfold, UNFOLD_PAUSE, type ScrollAnchor } from "../../lib/disclosure";
 import { Button, copyText, cx, Dialog, IconButton, Loading, Menu, toast, useMenu, useNow, type MenuItem } from "../../ui/atoms";
 import { BackgroundStallHint } from "../../ui/BackgroundStallHint";
@@ -113,6 +113,7 @@ import { DeleteSessionDialog, preloadSessionDialogs, RenameDialog, RenameSpaceDi
 import { PermissionPicker, usePlanMode } from "./PermissionPicker";
 import { permissionsCommand } from "../../lib/permissions-command";
 import { archiveCloseItems, closeItems } from "../AgentMenus";
+import { groupAgentMenu } from "../agent-menu-layout";
 import { ChatSidebarButton } from "../ShellSwitch";
 import { appArchiveDeps, offerSessionDelete, restoreAgent, useArchived } from "../../lib/agent-archives";
 import { UltracodeLostNote } from "./Ultracode";
@@ -304,7 +305,7 @@ async function rewindTo(mid: string, sid: string, draftKey: string, items: Item[
 
 /** In a side panel (TaskPanel, AgentPanel; #3333, iOS #3255; opened while Agents open in the side panel, #5424): the
  *  chat's one-line header is the panel's only one. It closes the panel (× at its end), may stand for the task (its title,
- *  with `sub` in the title's tooltip), carries the panel's own rows at the top of ⋯ and, beside the title, what the panel
+ *  with `sub` in the title's tooltip), includes the panel's own actions in ⋯ and, beside the title, what the panel
  *  puts there (a task's ⌄ to switch between its agents); the same space's other agents are left out. With `page`, a chat
  *  bubble before × opens the Agent shown as its own page (`/s/…`, as from the Agents list) and the panel closes. */
 export interface PanelChrome {
@@ -1684,12 +1685,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     setStopping(true);
     const waited = awaitingNow.current;
     try {
-      // the hub gives the computer 90 s: past that the link is dead, and a request that never ends must not hold the block
-      const r = await apiOp<{ state?: string }>(`${sessionPath(mid, sid)}/interrupt`, { method: "POST", timeout: pastHub(90_000) });
-      // a repeat after a gap can read as a success: the hub lost track of the first try, so nothing says it stopped
-      if (r.state === "unknown") throw new Error(t("lib-new-agent.outcome_unknown"));
+      await interruptAgent(mid, sid);
       toast(t("chat-chatview.interrupted"));
-      stopMessageFeedback(mid, sid);
       if (waited) setStoppedInput({ chat: `${mid}/${sid}`, id: waited });
       stopTimer.current = window.setTimeout(stopDone, STOP_SETTLE_MS);
     } catch (e) {
@@ -3411,6 +3408,14 @@ export const Header = memo(function Header({
   // the page's other view, switched in place (view / onView)
   const here = (p: typeof panel, kind: string) => Boolean(p && p.kind === kind && "sid" in p && session && p.mid === session.machine_id && p.sid === session.session_id);
   const showTerminal = Boolean(view && onView);
+  const isAgentMenu = Boolean(session && !session.assistant && !assistant && !main);
+  const panelVisible = !chrome && panel !== null && (!layout.maximized || narrow);
+  const terminalVisible = showTerminal && view === "term";
+  const backToChat = () => {
+    if (terminalVisible) onView?.("chat");
+    if (panelVisible) closePanel();
+    if (overview?.open) overview.toggle();
+  };
   // the side panel shows no terminal in place: its terminal button opens the agent's page in the terminal view, and the
   // panel closes, its chat being that page now (#7343)
   const jumpTerminal = !showTerminal && Boolean(onTerminal) && terminalJump(session, { inPanel: Boolean(chrome), assistant });
@@ -3479,6 +3484,12 @@ export const Header = memo(function Header({
   const tasksItem: MenuItem[] = tasks && phone ? [{ key: "conversation-tasks", label: t("sidepanel.conversation_tasks"), icon: "todo", checked: tasks.open, onSelect: tasks.onToggle }] : [];
   const own: MenuItem[] = session
     ? [
+        ...(isAgentMenu && (panelVisible || terminalVisible || overview?.open)
+          ? [{ key: "back-to-chat", label: t("agentmenus.back_to_chat"), icon: "chat" as const, onSelect: backToChat }]
+          : []),
+        ...(isAgentMenu && canMarkAgentSeen(session, muted)
+          ? [{ key: "seen", label: t("agentmenus.mark_seen"), icon: "check" as const, onSelect: () => markSeenLocally(session.machine_id, session.session_id) }]
+          : []),
         // the space's other agents (#5421: in ⋯ at every width, as cindy's header has no such button)
         ...(others.length > 0 ? [spaceAgentsItem(others, () => tabs.openAt(menu.anchor))] : []),
         ...assistantItems,
@@ -3528,7 +3539,7 @@ export const Header = memo(function Header({
         ...(allowed.includes("attach") ? [{ key: "attach", label: t("chat-chatview.attach"), icon: "link" as const, onSelect: () => void attach() }] : []),
         // Panel entries already visible as right-toolbar buttons on desktop stay in ⋯ only on phone viewports.
         ...(sides && phone ? [{ key: "sides", label: t("chat-chatview.side_sessions_count", { count: sides.count }), icon: "sideSessions" as const, checked: sides.open, onSelect: sides.onToggle }] : []),
-        ...(showTerminal && phone ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, checked: view === "term", onSelect: flipView }] : []),
+        ...(showTerminal && phone && !(isAgentMenu && terminalVisible) ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, checked: view === "term", onSelect: flipView }] : []),
         ...(jumpTerminal && phone ? [{ key: "terminal", label: t("lib-terminals.terminal"), icon: "terminal" as const, onSelect: openTerminalPage }] : []),
         ...(resumeOffer !== "hidden"
           ? [{ key: "resume-terminal", label: t("chat-chatview.resume_in_terminal"), icon: "play" as const, disabled: resumeOffer === "no_engine", detail: resumeOffer === "no_engine" ? t("chat-chatview.resume_no_engine", { computer: machineName }) : undefined, onSelect: resumeHere }]
@@ -3570,9 +3581,9 @@ export const Header = memo(function Header({
         ...(!archived && offerSessionDelete(session, features) ? [{ key: "delete", label: t("chat-chatview.delete_chat"), icon: "trash" as const, danger: true, onSelect: () => setDialog("delete") }] : []),
       ]
     : tasksItem;
-  // a side panel's own rows (Open in new window, Remove task…) at the top of ⋯
   const panelItems = chrome?.items ?? [];
-  const items: MenuItem[] = panelItems.length > 0 && own.length > 0 ? [...panelItems, { ...own[0], divider: true }, ...own.slice(1)] : [...panelItems, ...own];
+  const items = isAgentMenu ? groupAgentMenu(own, panelItems)
+    : panelItems.length && own.length ? [...panelItems, { ...own[0], divider: true }, ...own.slice(1)] : [...panelItems, ...own];
   // ⋯ sits at the right end of the header toolbar; on the main assistant page desktop uses the title pill on the left,
   // so ⋯ only appears on narrow screens when the shell switch hides the title.
   const assistantTitleMenu = Boolean(assistant && main);
@@ -3600,7 +3611,11 @@ export const Header = memo(function Header({
 
   return (
     <>
-      {menu.anchor && <SessionReviewMenuItem onItem={setSessionReviewItems} session={assistant ? undefined : session} busy={starting} ix={interactions} />}
+      {menu.anchor && session && !assistant && hubHas(features, SESSION_REVIEW_FEATURE) && (
+        <Suspense fallback={null}>
+          <SessionReviewMenuItem onItem={setSessionReviewItems} session={session} busy={starting} ix={interactions} />
+        </Suspense>
+      )}
       <header className="@container flex h-14 shrink-0 items-center gap-2 border-b border-line bg-page/85 px-3 backdrop-blur-md sm:px-4">
       <div className={headerSlot(Boolean(topCenter), "start")}>
         {onToggleSidebar && <ChatSidebarButton session={session} counted={!topCenter} onClick={onToggleSidebar} />}

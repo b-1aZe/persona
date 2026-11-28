@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { connect, getState, markSeen, reset, subscribe, upsertSession } from "./store";
+import { getSeenVisit } from "./seen-rows";
+import { connect, getState, markRowSeen, markSeen, reset, subscribe, upsertSession } from "./store";
 import type { Session } from "./types";
 
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: vi.fn() }));
@@ -30,6 +31,28 @@ beforeEach(() => {
 afterEach(() => { reset(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("marking fallback-only sessions seen", () => {
+  it("marks a paged-only row, keeps its place and receives the hub acknowledgement without the socket", async () => {
+    const shown = row("off-page", { waiting: false });
+    markRowSeen(shown);
+    await Promise.resolve();
+    expect(api).toHaveBeenCalledExactlyOnceWith("/sessions/demo/off-page/seen", { method: "POST" });
+    expect(Object.values(getState().seen)).toMatchObject([{ route: "http", answered: true }]);
+    expect(getSeenVisit().seen["demo/off-page"]).toBe("unread");
+    expect(getState().sessions.demo).toBeUndefined(); // a paged summary is not a complete chat detail
+  });
+
+  it("uses the newer row when a paged menu and the retained detail disagree", () => {
+    const fresh = row("new-turn", { waiting: false, updated_at: "2025-12-31T00:00:00Z" });
+    upsertSession(row("new-turn", { state: "working", updated_at: "2025-12-29T00:00:00Z", agent_name: "Retained name" }));
+    markRowSeen(fresh);
+    expect(api).toHaveBeenCalledExactlyOnceWith("/sessions/demo/new-turn/seen", { method: "POST" });
+    expect(getState().sessions.demo[0]).toMatchObject({ state: "idle", agent_name: "Retained name" });
+    upsertSession(row("new-turn", { state: "working", updated_at: "2026-01-02T00:00:00Z" }));
+    markRowSeen(fresh);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(getState().sessions.demo[0].state).toBe("working");
+  });
+
   it("sends each supplied unread identity once and retains only acted-on rows in one update", () => {
     const full = Array.from({ length: 75 }, (_, i) => row(`agent-${i}`));
     const untouched = row("retained");

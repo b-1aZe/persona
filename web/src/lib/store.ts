@@ -1381,6 +1381,26 @@ export function savePins(pins: AgentPins): Promise<void> {
   return save("pins", "/pins", pins, pinsSaves);
 }
 
+/** The menu may have opened on a filtered row outside the retained detail cache. Prefer the
+ *  latest hub state if a list refresh or a push arrived while the menu was open. */
+const seenRowTime = (s: Session) => Math.max(timeMs(s.updated_at), timeMs(s.state_since), timeMs(s.seen_at));
+export function currentAgentMenuRow(shown: Session): Session {
+  const { machine_id: mid, session_id: sid } = shown;
+  const listed = runtimeAgents.getSnapshot().rows.find((s) => s.machine_id === mid && s.session_id === sid);
+  const recent = listed && seenRowTime(listed) >= seenRowTime(shown) ? listed : shown;
+  const current = getSession(mid, sid);
+  return current && (current.deleted || seenRowTime(current) >= seenRowTime(recent)) ? current : recent;
+}
+
+export function markRowSeen(shown: Session) {
+  const s = currentAgentMenuRow(shown);
+  if (s.deleted || !unseen(s)) return;
+  const cached = state.sessions[s.machine_id]?.find((row) => row.session_id === s.session_id);
+  // A newer list summary updates only an existing detail's list fields. Keep paged-only summaries off the detail cache.
+  const updated = cached && cached !== s ? { ...listedOver(cached, s), waiting: cached.waiting } : undefined;
+  markSingleSeen(s, updated);
+}
+
 /** "Mark all as seen": every finished one of these nobody has seen (Unread, Just finished) is seen now, in one update of the list (iOS AppModel.markSeen). The
  * hub pushes the sessions back as seen; the list does not wait for it, and each waits in the seen outbox until it does. */
 export function markSeen(list: Session[]) {
@@ -1388,7 +1408,6 @@ export function markSeen(list: Session[]) {
   releaseSeen(list.map(agentKey));
   const keys = new Set<string>();
   const retained = new Map(Object.values(state.sessions).flat().map((s) => [runtimeIdentity(s), s]));
-  const changedAt = (s: Session) => Math.max(timeMs(s.updated_at), timeMs(s.state_since), timeMs(s.seen_at));
   const now = new Date().toISOString();
   const changed: Session[] = [];
   const marks: Record<string, SeenMark> = {};
@@ -1399,7 +1418,7 @@ export function markSeen(list: Session[]) {
     // The full-list fallback can supply rows absent from the bounded store. Retain only acted-on rows,
     // and honor a more recent local state (for example, an agent that has started working again).
     const current = retained.get(id);
-    const s = current && changedAt(current) >= changedAt(given) ? current : given;
+    const s = current && seenRowTime(current) >= seenRowTime(given) ? current : given;
     const mark = newMark(s, Date.now(), now);
     if (!mark) continue;
     marks[id] = deliverSeen(s.machine_id, s.session_id, mark);
@@ -2265,16 +2284,21 @@ onDefaultManager((was) => {
  *  in the outbox. */
 export function markSeenLocally(mid: string, sid: string) {
   const s = getSession(mid, sid);
-  const mark = s ? newMark(s, Date.now()) : undefined;
-  if (!mark) {
-    send({ type: "seen", machine_id: mid, session_id: sid });
-    return;
+  if (!s || !markSingleSeen(s)) send({ type: "seen", machine_id: mid, session_id: sid });
+}
+
+function markSingleSeen(s: Session, updatedDetail?: Session): boolean {
+  const mark = newMark(s, Date.now());
+  if (!mark) return false;
+  const id = runtimeIdentity(s);
+  if (activityOf(s) === "unread" || justFinished(s, state.mutes)) {
+    recordMarkedSeen(s, activityOf(s) === "idle" ? "just_finished" : "unread", viewed.has(id));
   }
-  if (s && (activityOf(s) === "unread" || justFinished(s, state.mutes))) {
-    recordMarkedSeen(s, activityOf(s) === "idle" ? "just_finished" : "unread", viewed.has(runtimeIdentity(s)));
-  }
-  set({ seen: { ...state.seen, [runtimeIdentity(s!)]: deliverSeen(mid, sid, mark) } });
+  const seen = { ...state.seen, [id]: deliverSeen(s.machine_id, s.session_id, mark) };
+  if (updatedDetail) applyCompleteSessions([updatedDetail], [], { seen });
+  else set({ seen });
   scheduleSeenCheck();
+  return true;
 }
 
 // ── chats on screen ─────────────────────────────────────

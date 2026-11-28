@@ -3,12 +3,29 @@
 import { t } from "../i18n";
 import { toast } from "../ui/atoms";
 import { agentHandoffText } from "./agent-handoff";
-import { errorText } from "./api";
+import { errorText, pastHub, sessionPath } from "./api";
+import { activityOf } from "./format";
+import { stopMessageFeedback } from "./message-send";
+import { apiOp } from "./ops";
+import { unseen } from "./seen-outbox";
 import { askPersona } from "./outbox";
 import { isPinned, isSpacePinned, spaceKey, togglePin, toggleSpacePin, toggled, type AgentPins } from "./pins";
 import { isMuted, toggleMute } from "./session-actions";
 import { getState, saveMutes, savePins } from "./store";
 import type { Session } from "./types";
+
+/** A finished reply can be marked as seen. Muting suppresses Just finished for legacy rows;
+ *  with a manager view the phase and reason already account for the user's preferences. */
+export function canMarkAgentSeen(s: Session, muted: boolean): boolean {
+  return unseen(s) && (Boolean(s.view) || !muted || activityOf(s) === "unread");
+}
+
+export async function interruptAgent(mid: string, sid: string): Promise<void> {
+  // The hub gives the computer 90 s. An unknown outcome after a retry is not a confirmed stop.
+  const result = await apiOp<{ state?: string }>(`${sessionPath(mid, sid)}/interrupt`, { method: "POST", timeout: pastHub(90_000) });
+  if (result.state === "unknown") throw new Error(t("lib-new-agent.outcome_unknown"));
+  stopMessageFeedback(mid, sid);
+}
 
 async function putPins(next: AgentPins, done: string) {
   try {

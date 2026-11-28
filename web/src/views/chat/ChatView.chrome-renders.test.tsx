@@ -2,6 +2,7 @@
 // Each item pushed to the open conversation renders ChatView again (its transcript changed). The header and the composer
 // around it did not change, so they stay put: counted through a leaf each one draws (the header's "Session info" dialog,
 // the composer's context chips, the composer's permission picker).
+import { openAgentMore } from "../../test/agent-menu";
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -197,7 +198,7 @@ it("a completed task remains a labelled, clickable owner, not a prompt to link i
     }));
     act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
     await settle();
-    const menu = document.querySelector('[role="menu"]')!;
+    const menu = openAgentMore();
     const label = t("chat-chatview.todo_completed_label", { title: "Completed example task" });
     expect(menu.textContent).toContain(label);
     expect(menu.textContent).not.toContain(t("chat-chatview.link_todo"));

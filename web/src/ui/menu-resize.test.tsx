@@ -138,3 +138,35 @@ describe("Menu placement with wrapping rows", () => {
     expect(panel().style.top).toBe(`${600 - 240 - 6}px`);
   });
 });
+
+it("updates an open submenu when its parent moves and its available actions change", () => {
+  const open = vi.fn();
+  const paint = (ready: boolean) => act(() => root.render(<Menu anchor={anchor} onClose={() => {}} items={[
+    ...(ready ? [{ key: "seen", label: "Mark as seen", onSelect: () => {} }] : []),
+    { key: "more", label: "More", onSelect: () => {}, children: [
+      { key: "review", label: "Review", disabled: !ready, onSelect: open },
+    ] },
+  ]} />));
+  paint(false);
+  act(() => document.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!.click());
+  const review = () => document.querySelector<HTMLButtonElement>('[data-menu]:last-of-type [role="menuitem"]')!;
+  expect(review().disabled).toBe(true);
+  paint(true);
+  expect(review().disabled).toBe(false);
+  act(() => review().click());
+  expect(open).toHaveBeenCalledOnce();
+});
+
+it("keeps keyboard selection on the same command across a submenu update", () => {
+  const run = vi.fn();
+  const paint = (keys: string[]) => act(() => root.render(<Menu anchor={anchor} onClose={() => {}} items={[
+    { key: "more", label: "More", onSelect: () => {}, children: keys.map((key) => ({ key, label: key, onSelect: () => run(key) })) },
+  ]} />));
+  const press = (key: string) => act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key })));
+  paint(["mute", "delete"]);
+  press("Home");
+  press("ArrowRight");
+  paint(["delete"]);
+  press("Enter");
+  expect(run).not.toHaveBeenCalled();
+});

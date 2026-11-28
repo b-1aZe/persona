@@ -3,6 +3,7 @@
 // panel (a task's or an Agent's), which shows no terminal in place, the same button opens the agent's page in its
 // terminal view. While the conversation is shown, the button carries the attention dot when the terminal waits on a
 // dialog: herdr calls the agent blocked, or a send here was refused with dialog_open.
+import { openAgentMore } from "../../test/agent-menu";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -61,6 +62,7 @@ const dot = () => terminalButton()?.parentElement?.querySelector("[data-terminal
 async function menuItems(): Promise<string[]> {
   act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
   await settle();
+  openAgentMore();
   const items = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].map((x) => x.textContent ?? "");
   act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
   return items;
@@ -106,6 +108,7 @@ it("the side panel's localized terminal menu item opens the terminal page and cl
     await open(<ChatView mid="mac" sid="s1" panel={{ onClose, items: [] }} />);
     act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
     await settle();
+    openAgentMore();
     const item = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')]
       .find((x) => x.textContent?.includes(t("lib-terminals.terminal")));
     expect(item).toBeDefined();
