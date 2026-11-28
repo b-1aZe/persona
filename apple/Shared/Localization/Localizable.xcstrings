@@ -965,12 +965,12 @@
       },
       "extractionState": "manual"
     },
-    "Mark Seen [Agent Menu]": {
+    "Mark as Seen [Agent Menu]": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mark Seen"
+            "value": "Mark as Seen"
           }
         },
         "zh-Hans": {

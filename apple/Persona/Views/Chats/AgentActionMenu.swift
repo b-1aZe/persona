@@ -546,7 +546,7 @@ extension AgentActionItem.ID {
         case .space: "Space Agents"
         case .attach: "Attach Live"
         case .interrupt: "Interrupt [Composer Buttons f9d193]"
-        case .markSeen: "Mark Seen [Agent Menu]"
+        case .markSeen: "Mark as Seen [Agent Menu]"
         case .takeover: "Take over"
         case .continueInNewSession: "Continue in New Chat"
         case .rename: "Rename Agent"

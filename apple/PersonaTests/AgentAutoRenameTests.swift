@@ -44,7 +44,13 @@ struct AgentAutoRenameTests {
         }
         let request = try #require(model.autoRenameAgent(agent, fromWorktreeSubmenu: true))
         #expect(model.toast?.message.hasPrefix(String(localized: "Renaming…")) == true)
-        #expect(model.pendingAgentTitle(agent.key) == String(localized: "Renaming…"))
+        let pendingTitle = model.pendingAgentTitle(agent.key)
+        let regular = SlotRow(session: agent, pendingTitle: pendingTitle)
+        let compact = CompactSlotRow(session: agent, pendingTitle: pendingTitle)
+        #expect(regular != SlotRow(session: agent))
+        #expect(compact != CompactSlotRow(session: agent))
+        #expect(regular.rowTitle == String(localized: "Renaming…"))
+        #expect(compact.rowTitle == String(localized: "Renaming…"))
         #expect(model.session(agent.key)?.title == "Original")
         #expect(model.autoRenameAgent(agent) == nil)
         await request.value
