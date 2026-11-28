@@ -110,10 +110,11 @@ import (
 // supervision-policy recovery (#17348) measured 310,620 B against the 308,516 B ACP main: +2,104 B.
 // Its Antigravity part is unchanged by the separately packed OpenCode change above, giving a 312,684 B union.
 // Fixing Antigravity supervision policy >24KB early-newline split fallback and hardening policyRoot/session/file symlink + O_NOFOLLOW checks add 337 B (312,684 B -> 313,021 B).
-// Runtime command input (#14573) adds 2,657 B for the SDK driver contract and wire handling (313,021 B -> 315,678 B).
+// At 8eced51188 the generated packages already measure 315,176 B. Runtime command input (#14573)
+// adds 2,657 B to the SDK package, bringing the measured total to 317,833 B.
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 315_678
+	const budget = 317_833
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
