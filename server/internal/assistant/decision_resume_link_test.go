@@ -101,7 +101,6 @@ func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
 			switch scenario {
 			case "owner resumed":
 				running := boxAgent(ag.SessionID)
-				running.Status = proto.StatusWorking
 				s.SessionsChanged(t.Context(), DeviceSessions{MachineID: ag.MachineID, Sessions: []proto.Session{running}})
 			case "resumable retry":
 				stopped.Capabilities.StopCause = proto.StopUnknown

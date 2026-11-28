@@ -38,7 +38,7 @@ func (b *acceptBook) observeResumedSessions(d DeviceSessions) {
 	maps.DeleteFunc(b.refusedResumes, func(attempt resumeAttempt, _ time.Time) bool {
 		return attempt.agent.MachineID == d.MachineID && slices.ContainsFunc(d.Sessions, func(c proto.Session) bool {
 			return c.SessionID == attempt.agent.SessionID && !c.Archived && !stoppedAgent(c) &&
-				(c.Status == proto.StatusWorking || c.Capabilities != nil && c.Capabilities.Send)
+				(c.Status == proto.StatusWorking || c.Status == proto.StatusIdle || c.Capabilities != nil && c.Capabilities.Send)
 		})
 	})
 }
