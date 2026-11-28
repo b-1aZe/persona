@@ -109,9 +109,10 @@ import (
 // Persona-owned prepared identity persistence, scoped marker validation, lazy restoration and fail-closed
 // supervision-policy recovery (#17348) measured 310,620 B against the 308,516 B ACP main: +2,104 B.
 // Its Antigravity part is unchanged by the separately packed OpenCode change above, giving a 312,684 B union.
+// Runtime command input (#14573) adds 2,529 B for the SDK driver contract and wire handling (312,684 B -> 315,213 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 312_684
+	const budget = 315_213
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
