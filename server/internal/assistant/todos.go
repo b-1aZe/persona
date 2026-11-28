@@ -41,18 +41,20 @@ type TodoSpace struct {
 }
 
 type TodoAgent struct {
-	MachineID           string     `json:"machine_id"`
-	SessionID           string     `json:"session_id"`
-	LinkedAt            time.Time  `json:"linked_at"`
-	ReleasedAt          *time.Time `json:"released_at,omitempty"`
-	Title               string     `json:"title"`
-	Cwd                 string     `json:"cwd"`
-	Agent               string     `json:"agent"`
-	StartError          string     `json:"start_error,omitempty"`
-	Source              string     `json:"source"`
-	Via                 string     `json:"via,omitempty"`
-	DismissedAt         *time.Time `json:"dismissed_at,omitempty"`
-	resumeInvalidatedAt time.Time  // in-memory observation on this binding, used only for pending supervisor resume refusals
+	MachineID   string     `json:"machine_id"`
+	SessionID   string     `json:"session_id"`
+	LinkedAt    time.Time  `json:"linked_at"`
+	ReleasedAt  *time.Time `json:"released_at,omitempty"`
+	Title       string     `json:"title"`
+	Cwd         string     `json:"cwd"`
+	Agent       string     `json:"agent"`
+	StartError  string     `json:"start_error,omitempty"`
+	Source      string     `json:"source"`
+	Via         string     `json:"via,omitempty"`
+	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+
+	// A resume check begun before this binding was observed running, resumable or closed cannot supply a terminal.
+	resumeInvalidatedAt time.Time
 }
 
 type Todo struct {
@@ -1777,9 +1779,10 @@ func (s *Service) setTodoRow(id string, row db.TodoRow, guard func(*Todo) bool) 
 		now := time.Now()
 		for i := range t.Agents {
 			if t.Agents[i].active() {
-				s.todos.invalidateResumeLocked(&t.Agents[i], now)
+				t.Agents[i].resumeInvalidatedAt = now
 			}
 		}
+		s.todos.pruneResumeChecksLocked(now)
 	}
 	reopened := t.DoneAt != nil && row.DoneAt == nil
 	var reopenedEvent map[string]any

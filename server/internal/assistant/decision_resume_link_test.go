@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/db"
-
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -370,10 +369,8 @@ func TestDecisionTerminalArchiveRetryTimeoutKeepsConfirmedRefusal(t *testing.T) 
 	if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
 		t.Fatal(err)
 	}
-	if row := listedAsk(t, s, todo.ID); row != nil {
-		if ref, _ := row["resume_terminal"].(map[string]any); ref["session_id"] == ag.SessionID && ref["machine_id"] == ag.MachineID {
-			return
-		}
+	row := listedAsk(t, s, todo.ID)
+	if ref, _ := row["resume_terminal"].(map[string]any); ref["session_id"] != ag.SessionID || ref["machine_id"] != ag.MachineID {
+		t.Fatalf("archive timeout discarded the confirmed refusal: %v", row)
 	}
-	t.Fatal("archive timeout discarded the confirmed refusal")
 }

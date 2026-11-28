@@ -39,15 +39,11 @@ func (b *todoBook) resumeBindingLocked(machine, session string) (*Todo, *TodoAge
 	return nil, nil
 }
 
-// A live row or a verified resumable stop supersedes older refusals about this Agent. The timestamp belongs to
-// the active binding so an earlier read still in flight cannot recreate a refusal after this observation.
-func (b *todoBook) invalidateResumeLocked(a *TodoAgent, at time.Time) {
-	if !at.After(a.resumeInvalidatedAt) {
-		return
-	}
-	a.resumeInvalidatedAt = at
-	maps.DeleteFunc(b.refusedResumes, func(r resumeAttempt, refused time.Time) bool {
-		return r.agent.MachineID == a.MachineID && r.agent.SessionID == a.SessionID && !refused.After(at)
+// Drop retired evidence in one pass per node list, independently of how many live Agents it contains.
+func (b *todoBook) pruneResumeChecksLocked(now time.Time) {
+	maps.DeleteFunc(b.refusedResumes, func(r resumeAttempt, at time.Time) bool {
+		t, a := b.resumeBindingLocked(r.agent.MachineID, r.agent.SessionID)
+		return a == nil || t.ID != r.todo || at.Before(a.LinkedAt) || !at.After(a.resumeInvalidatedAt) || now.Sub(at) > decisionRecheckAfter
 	})
 }
 
@@ -59,11 +55,12 @@ func (b *todoBook) noteResumeCheck(sender string, review resumeReview, machine s
 		return
 	}
 	if !ownerOnly {
-		b.invalidateResumeLocked(a, review.listedAt)
+		a.resumeInvalidatedAt = review.listedAt
+	}
+	b.pruneResumeChecksLocked(time.Now())
+	if !ownerOnly {
 		return
 	}
-	now := time.Now()
-	maps.DeleteFunc(b.refusedResumes, func(_ resumeAttempt, at time.Time) bool { return now.Sub(at) > decisionRecheckAfter })
 	if b.refusedResumes == nil {
 		b.refusedResumes = make(map[resumeAttempt]time.Time)
 	}
@@ -90,8 +87,9 @@ func (b *todoBook) observeResumedSessions(d DeviceSessions) {
 				continue
 			}
 		}
-		b.invalidateResumeLocked(a, now)
+		a.resumeInvalidatedAt = now
 	}
+	b.pruneResumeChecksLocked(now)
 }
 
 // takeResumeTerminal consumes confirmed refusals for this review. Only one current binding can identify the target.
@@ -102,22 +100,16 @@ func (b *todoBook) takeResumeTerminal(id, reviewer string, now time.Time) *Sessi
 	if t == nil || t.DoneAt != nil {
 		return nil
 	}
+	b.pruneResumeChecksLocked(now)
 	var target *SessionRef
 	var count int
-	for attempt, at := range b.refusedResumes {
-		if now.Sub(at) > decisionRecheckAfter {
-			delete(b.refusedResumes, attempt)
-			continue
-		}
+	for attempt := range b.refusedResumes {
 		if attempt.todo != id || attempt.reviewer != reviewer {
 			continue
 		}
 		delete(b.refusedResumes, attempt)
-		a, bound := findActiveLinkedAgent(*t, attempt.agent.MachineID, attempt.agent.SessionID)
-		if bound && !at.Before(a.LinkedAt) {
-			target = &attempt.agent
-			count++
-		}
+		target = &attempt.agent
+		count++
 	}
 	if count == 1 {
 		return target
