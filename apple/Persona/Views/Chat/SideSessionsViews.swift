@@ -50,7 +50,8 @@ struct SideSessionsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     /// "Side Sessions (3)": the ⋯ item's title, and the chip's spoken one.
-    static func menuTitle(_ count: Int) -> String { String(localized: "Side Sessions (\(count))") }
+    static func menuTitle(_ count: Int) -> String { String(localized: titleResource(count)) }
+    static func titleResource(_ count: Int) -> LocalizedStringResource { "Side Sessions (\(count))" }
 
     var body: some View {
         let sides = model.sides(of: parent)

@@ -4634,7 +4634,7 @@ nonisolated struct SlotRow: View, Equatable {
     var preferHerdrTabName = false
 
     var primaryTab: String? { session.displayTabName(preferTab: preferHerdrTabName) }
-    var rowTitle: String { session.displayTitle(preferTab: preferHerdrTabName) }
+    @MainActor var rowTitle: String { AppModel.shared.pendingAgentTitle(session.key) ?? session.displayTitle(preferTab: preferHerdrTabName) }
     var titleDetail: String? { session.displayTitleDetail(preferTab: preferHerdrTabName) }
 
     enum Surface: Equatable {
@@ -5009,7 +5009,7 @@ nonisolated struct CompactSlotRow: View, Equatable {
             }
             .scaledFrame(width: CompactList.mark)
             HStack(alignment: .firstTextBaseline, spacing: CompactList.gap) {
-                Text(session.displayTitle(preferTab: preferHerdrTabName))
+                Text(AppModel.shared.pendingAgentTitle(session.key) ?? session.displayTitle(preferTab: preferHerdrTabName))
                     .font(session.state == .unread ? CompactList.titleUnread : CompactList.title)
                     .lineLimit(1)
                     .layoutPriority(1)

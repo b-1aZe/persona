@@ -996,6 +996,28 @@
         }
       }
     },
+    "Open Linked To-do": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Linked To-do"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リンク先ToDoを開く"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开关联待办"
+          }
+        }
+      }
+    },
     "Opened in a Terminal [Launcher]": {
       "comment": "Token usage by project: sessions typed in a terminal, with no launcher",
       "localizations": {
@@ -32905,6 +32927,28 @@
         }
       }
     },
+    "Auto Rename": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto Rename"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動命名"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动命名"
+          }
+        }
+      }
+    },
     "Auto-Accept Edits": {
       "localizations": {
         "en": {
@@ -41700,6 +41744,28 @@
         }
       }
     },
+    "Change Linked To-do": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change Linked To-do"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リンク先ToDoを変更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更换关联待办"
+          }
+        }
+      }
+    },
     "Change Model…": {
       "extractionState": "manual",
       "localizations": {
@@ -47478,6 +47544,28 @@
         }
       },
       "extractionState": "manual"
+    },
+    "Close Agent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close Agent"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agentを閉じる"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关闭 Agent"
+          }
+        }
+      }
     },
     "Close Agent…": {
       "localizations": {
@@ -53530,6 +53618,28 @@
         }
       }
     },
+    "Continue in New Chat": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue in New Chat"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新規チャットで続行"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在新对话中继续"
+          }
+        }
+      }
+    },
     "Continue in Original Chat": {
       "localizations": {
         "en": {
@@ -54974,6 +55084,28 @@
         }
       },
       "extractionState": "manual"
+    },
+    "Copy Resume Cmd": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Resume Cmd"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再開コマンドをコピー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝恢复命令"
+          }
+        }
+      }
     },
     "Copy Resume Command": {
       "localizations": {
@@ -65229,6 +65361,28 @@
         }
       },
       "extractionState": "manual"
+    },
+    "Delete Chat": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Chat"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "チャットを削除"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除对话"
+          }
+        }
+      }
     },
     "Delete Chat…": {
       "localizations": {
@@ -111418,6 +111572,28 @@
         }
       }
     },
+    "Move To": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move To"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移動"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移到"
+          }
+        }
+      }
+    },
     "Move To [Files]": {
       "extractionState": "manual",
       "localizations": {
@@ -114643,6 +114819,28 @@
         }
       },
       "extractionState": "manual"
+    },
+    "New Child Worktree": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Child Worktree"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子ワークツリー作成"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建子工作树"
+          }
+        }
+      }
     },
     "New Conversation Permissions": {
       "localizations": {
@@ -155215,6 +155413,28 @@
       },
       "extractionState": "manual"
     },
+    "Rename Agent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename Agent"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent名を変更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名 Agent"
+          }
+        }
+      }
+    },
     "Rename Chat": {
       "localizations": {
         "en": {
@@ -155303,6 +155523,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "重命名标签页"
+          }
+        }
+      }
+    },
+    "Rename Worktree": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename Worktree"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークツリー名変更"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名工作树"
           }
         }
       }
@@ -155444,6 +155686,28 @@
         }
       },
       "extractionState": "manual"
+    },
+    "Renaming…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Renaming…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命名中…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在命名…"
+          }
+        }
+      }
     },
     "Render Markdown": {
       "localizations": {
@@ -158143,6 +158407,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "在终端里恢复"
+          }
+        }
+      }
+    },
+    "Resume: No Terminal": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resume: No Terminal"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再開不可：端末なし"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法恢复：无终端"
           }
         }
       }
@@ -175711,6 +175997,28 @@
         }
       }
     },
+    "Space Agents": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Space Agents"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スペース内のAgent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空间内的 Agent"
+          }
+        }
+      }
+    },
     "Space Persona uses on this Mac. Caches can all be fetched again from the hub: after clearing, chats and images download again when you open them.": {
       "localizations": {
         "en": {
@@ -181448,6 +181756,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "子智能体 · %1$@"
+          }
+        }
+      }
+    },
+    "Subagents (%lld) [Agent Menu]": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subagents (%lld)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子Agent（%lld）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "子智能体（%lld）"
           }
         }
       }
@@ -239858,13 +240188,13 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "ワークツリー名をコピー"
+            "value": "ワークツリー名コピー"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "拷贝工作树名称"
+            "value": "拷贝工作树名"
           }
         }
       }
