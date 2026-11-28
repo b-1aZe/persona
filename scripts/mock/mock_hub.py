@@ -30355,6 +30355,9 @@ class H(BaseHTTPRequestHandler):
         machine = next((m for m in MACHINES if m["id"] == mid), {})
         listed = listed or (port == 5900 and (machine.get("computer", {}).get("enabled") or machine.get("browser", {}).get("enabled")))  # cua or ego (#1507)
         # MOCK_PREVIEW: a preview's running port is the made-up app's page server (scripts/mock/mock_preview.py).
+        preview_err = mock_preview.forward_error(port) if preview_route and hasattr(mock_preview, "forward_error") else None
+        if preview_err is not None:
+            return self.send_json({"error": preview_err[1]}, preview_err[0])
         preview_to = mock_preview.forward(port) if preview_route else None
         listed = listed or preview_to is not None
         if not listed: return self.send_json({"error": "port %d is not an agent's and was not opened" % port}, 403)

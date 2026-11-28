@@ -26,6 +26,7 @@ import { setStarredEnabled, useStarredSetting } from "../lib/starred-summary";
 import { setNeedsYouAutoOpen, useNeedsYouAutoOpen } from "../lib/needs-you-auto-open";
 import { setReplyMotionEnabled, useReplyMotionSetting } from "../ui/stream/motion";
 import { setAgentDetails, useAgentDetails } from "../lib/context-usage";
+import { setConfirmationEnabled, useApprovalConfirmation } from "../lib/approval-confirmation";
 import { setSidebarTerminals, useSidebarTerminals } from "../lib/sidebar-terminals";
 import { HubList } from "./Hubs";
 import { useDisconnect } from "./DisconnectBrowser";
@@ -944,7 +945,12 @@ function General({ onModel }: { onModel: () => void }) {
   );
 }
 
+/** Settings › Advanced › Appearance (#13398): the non-default looks — theme color, extension theme, interface/code
+ *  fonts and colored sidebar icons. General keeps the default appearance (Match system / Light / Dark), text size,
+ *  language and behavior rows. These are the same components reading the same browser storage as before, so an
+ *  existing choice and the untouched default look are unchanged. */
 function Advanced({ onPick }: { onPick: (k: Tab) => void }) {
+  const confirm = useApprovalConfirmation();
   return (
     <>
       <Group title={t("settings.appearance")} anchor="appearance">
@@ -954,6 +960,11 @@ function Advanced({ onPick }: { onPick: (k: Tab) => void }) {
         <FontRows />
         <SidebarIconsRow />
         <PhoneNavRow />
+      </Group>
+      <Group title={t("approval-impact.approvals")} anchor="outward-confirmation">
+        <Row label={t("approval-impact.setting")} hint={t("approval-impact.hint")} wrapHint>
+          <Switch label={t("approval-impact.setting")} on={confirm} onChange={setConfirmationEnabled} />
+        </Row>
       </Group>
       <Group title={t("settings-nav.group_hub")}>
         {ADVANCED_HUB_TABS.map(k => (
