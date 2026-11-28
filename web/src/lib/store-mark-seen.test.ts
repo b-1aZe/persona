@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
+import { runtimeAgents } from "./runtime-list";
 import { getSeenVisit } from "./seen-rows";
-import { connect, getState, markRowSeen, markSeen, reset, subscribe, upsertSession } from "./store";
+import { canInterruptAgentRow, connect, getState, markRowSeen, markSeen, reset, subscribe, upsertSession } from "./store";
 import type { Session } from "./types";
 
 vi.mock("./api", async (original) => ({ ...await original<typeof import("./api")>(), api: vi.fn() }));
@@ -29,6 +30,20 @@ beforeEach(() => {
   vi.mocked(api).mockReset().mockResolvedValue({});
 });
 afterEach(() => { reset(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it.each([
+  ["2025-12-31T00:00:00.123000001Z", false],
+  ["2025-12-31T00:00:00.123000002Z", false],
+  ["2025-12-31T00:00:00.123000000Z", true],
+])("rechecks a retained interrupt grant against the paged Agent at %s", async (updatedAt, allowed) => {
+  const shown = row("busy", { state: "working", status: "working", updated_at: "2025-12-31T00:00:00.123000001Z", capabilities: { interrupt: true } });
+  upsertSession(shown);
+  const revoked = { ...shown, updated_at: String(updatedAt), waiting: false, capabilities: { interrupt: false } };
+  vi.mocked(api).mockResolvedValue({ sessions: [revoked], revision: "2", has_more: false, total: 1, remove: [] });
+  await runtimeAgents.load();
+  expect(runtimeAgents.getSnapshot().rows).toEqual([revoked]);
+  expect(canInterruptAgentRow(shown)).toBe(allowed);
+});
 
 describe("marking fallback-only sessions seen", () => {
   it("marks a paged-only row, keeps its place and receives the hub acknowledgement without the socket", async () => {

@@ -85,11 +85,11 @@ describe("the single-Agent header menu", () => {
     expect(labels()).toEqual(top);
     openAgentMore();
     const children = labels().slice(top.length);
-    expect(children.sort()).toEqual([
-      t("chat-chatview.files"), "Git", t("chat-chatview.share"), t("chat-chatview.link_todo"), t("chat-chatview.mute"),
+    expect(children).toEqual([
+      t("chat-chatview.files"), "Git", t("chat-chatview.mute"), t("chat-chatview.link_todo"), t("chat-chatview.share"),
       t("chat-chatview.export"), t("chat-chatview.session_info"), t("chat-chatview.copy_session_id"),
       t("chat-chatview.copy_folder"), t("chat-chatview.copy_resume_command"), t("chat-chatview.delete_chat"),
-    ].sort());
+    ]);
     expect(new Set(labels()).size).toBe(labels().length);
     act(() => menuRows()[0].click());
     expect(onView).toHaveBeenCalledExactlyOnceWith("chat");
@@ -111,6 +111,24 @@ describe("the single-Agent header menu", () => {
     expect(labels()[0]).toBe(t("chat-chatview.interrupt"));
     act(() => menuRows()[0].click());
     expect(onInterrupt).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { kind: "agent", mid: "mac", sid: "another-agent" },
+    { kind: "task", todo: "separate-task" },
+  ] as const)("returns from the Agent's terminal without closing a separate $kind panel", async (panel) => {
+    const onView = vi.fn();
+    const render = (view: "chat" | "term") => root.render(
+      <Header session={agent} title={agent.title} machineName="Test" siblings={[]} onInterrupt={() => {}} view={view} onView={onView} />,
+    );
+    act(() => { openPanel(panel); render("chat"); });
+    await openHeaderMenu();
+    expect(labels()).not.toContain(t("agentmenus.back_to_chat"));
+    act(() => render("term"));
+    expect(labels()[0]).toBe(t("agentmenus.back_to_chat"));
+    act(() => menuRows()[0].click());
+    expect(onView).toHaveBeenCalledExactlyOnceWith("chat");
+    expect(getPanel()).toEqual(panel);
   });
 
   it("keeps Delete last for an offline Agent without a name change or a directory", async () => {

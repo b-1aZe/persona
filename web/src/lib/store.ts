@@ -26,7 +26,7 @@ import { clientInstance, helloDeviceId } from "./device-id";
 import { currentLanguage } from "../i18n";
 import type { AgentMutes } from "./agent-groups";
 import { justFinished } from "./agent-groups";
-import { activityOf } from "./format";
+import { activityOf, sessionMenuActions } from "./format";
 import { timeMs, timeNs } from "./times";
 import { agentKey, NO_PINS, pinsOf, type AgentPins } from "./pins";
 import { holdNotedSeen, recordMarkedSeen, releaseOpenSeen, releaseSeen, resetSeenVisit } from "./seen-rows";
@@ -1384,16 +1384,31 @@ export function savePins(pins: AgentPins): Promise<void> {
 /** The menu may have opened on a filtered row outside the retained detail cache. Prefer the
  *  latest hub state if a list refresh or a push arrived while the menu was open. */
 const seenRowTime = (s: Session) => Math.max(timeMs(s.updated_at), timeMs(s.state_since), timeMs(s.seen_at));
-export function currentAgentMenuRow(shown: Session): Session {
+function currentAgentMenuRows(shown: Session): Session[] {
   const { machine_id: mid, session_id: sid } = shown;
-  const listed = runtimeAgents.getSnapshot().rows.find((s) => s.machine_id === mid && s.session_id === sid);
-  const recent = listed && seenRowTime(listed) >= seenRowTime(shown) ? listed : shown;
+  const matches = (row: Session) => row.machine_id === mid && row.session_id === sid;
   const current = getSession(mid, sid);
-  return current && (current.deleted || seenRowTime(current) >= seenRowTime(recent)) ? current : recent;
+  if (current?.deleted) return [current];
+  // getSession prefers a retained detail even when one of the lists has received a newer row.
+  const listed = runtimeAgents.getSnapshot().rows.find(matches);
+  const summary = state.sessionSummaries.find(matches);
+  return [current, listed, summary, shown].filter((row): row is Session => row !== undefined);
+}
+
+export function canInterruptAgentRow(shown: Session): boolean {
+  const candidates = currentAgentMenuRows(shown).map((s) => {
+    // A read receipt does not grant control. Compare the activity clocks at full wire precision.
+    const updated = timeNs(s.updated_at) ?? 0n;
+    const since = timeNs(s.state_since) ?? 0n;
+    return { s, at: updated > since ? updated : since };
+  });
+  const newest = candidates.reduce((latest, row) => row.at > latest ? row.at : latest, 0n);
+  // A conflicting row at the same instant can veto an interrupt.
+  return candidates.every(({ s, at }) => at < newest || sessionMenuActions(s).includes("stop"));
 }
 
 export function markRowSeen(shown: Session) {
-  const s = currentAgentMenuRow(shown);
+  const s = currentAgentMenuRows(shown).reduce((latest, row) => seenRowTime(row) > seenRowTime(latest) ? row : latest);
   if (s.deleted || !unseen(s)) return;
   const cached = state.sessions[s.machine_id]?.find((row) => row.session_id === s.session_id);
   // A newer list summary updates only an existing detail's list fields. Keep paged-only summaries off the detail cache.

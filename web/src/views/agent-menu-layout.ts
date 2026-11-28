@@ -2,7 +2,7 @@ import { t } from "../i18n";
 import type { MenuItem } from "../ui/menu-model";
 
 // DESIGN_SYSTEM §3.4: both Web entry points lay out the actions they actually offer.
-// Keep Web-specific session and panel actions together, in their original order.
+// Keep Web-specific session actions in their original order within their section.
 export function groupAgentMenu(items: MenuItem[], paneItems: MenuItem[] = []): MenuItem[] {
   const remaining = new Map(items.map((item) => [item.key, item]));
   const take = (...keys: string[]) => keys.flatMap((key) => {
@@ -18,13 +18,15 @@ export function groupAgentMenu(items: MenuItem[], paneItems: MenuItem[] = []): M
   const utilities = take("sid", "cwd", "terminal", "resume", "resume-terminal");
   const deletion = take("delete");
 
-  // Panel and node contributions own their keys (including e.g. "delete").
-  // Keep them out of the Agent action lookup and of its confirmation state.
+  // Node actions own their keys. Place their copy commands alongside the chat's equivalents.
   const pane = paneItems.map((item) => ({ ...item, key: `pane:${item.key}` }));
-  const groups = [navigation, [...session, ...remaining.values()], utilities, pane, deletion].filter((group) => group.length);
-  const children = groups.flatMap((group, index) => group.map((item, i) => (
-    { ...item, divider: index > 0 && i === 0 }
-  )));
+  const nodeCopies = pane.filter((item) => item.key.startsWith("pane:node-copy-"));
+  const nodeActions = pane.filter((item) => !item.key.startsWith("pane:node-copy-"));
+  const groups = [navigation, [...session, ...remaining.values()], [...nodeCopies, ...utilities], nodeActions, deletion];
+
+  const children = groups.filter((group) => group.length).flatMap((group, section) =>
+    group.map((item, index) => ({ ...item, divider: index === 0 && section > 0 || item.divider })),
+  );
   if (children.length) top.push({ key: "more", label: t("sidebar.more"), icon: "more", children, onSelect: () => {} });
   return [...top, ...last.map((item) => ({ ...item, divider: true }))];
 }

@@ -96,9 +96,9 @@ async function clickMenu(label: string) {
   act(() => item!.click());
   await settle();
 }
-async function expectSessionWindow(s = first, sessionLoaded = true) {
+async function expectSessionWindow(s = first) {
   await clickMore();
-  if (sessionLoaded) await clickMenu(t("sidebar.more"));
+  expect(document.querySelector('[role="menuitem"]')?.textContent).toBe(t("assistant-taskpanel.open_in_new_window"));
   await clickMenu(t("assistant-taskpanel.open_in_new_window"));
   expect(newWindow).toHaveBeenLastCalledWith(href({ name: "session", mid: s.machine_id, sid: s.session_id }), "_blank", "noopener");
   expect(newWindow.mock.calls.at(-1)?.[0]).not.toContain("/todos");
@@ -168,9 +168,11 @@ describe("Agent panel new-window destination", () => {
     await expectSessionWindow(second);
   });
 
-  it("uses linked Agent identity before the session list arrives", async () => {
+  it("keeps Open in new window first before and after the linked Agent loads", async () => {
     await open({ kind: "task", todo: "example-task" }, task(), []);
-    await expectSessionWindow(first, false);
+    await expectSessionWindow();
+    act(() => applyCompleteSessions([first]));
+    await expectSessionWindow();
   });
 
   it("opens the task only while the panel has no unreleased Agent to show", async () => {
@@ -185,7 +187,6 @@ describe("Agent panel new-window destination", () => {
     await open({ kind: "task", todo: "example-task" });
     try {
       await clickMore();
-      await clickMenu(t("sidebar.more"));
       await clickMenu(t("chat-chatview.todo_label", { title: "Example task" }));
       expect(location.pathname + location.search).toBe("/todos?id=example-task");
       expect(newWindow).not.toHaveBeenCalled();

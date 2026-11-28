@@ -3,8 +3,9 @@
 import { t } from "../i18n";
 import { toast } from "../ui/atoms";
 import { agentHandoffText } from "./agent-handoff";
-import { errorText, pastHub, sessionPath } from "./api";
+import { credentialOwner, errorText, pastHub, sessionPath } from "./api";
 import { activityOf } from "./format";
+import { managerHeaderFor, shownManager } from "./manager-choice";
 import { stopMessageFeedback } from "./message-send";
 import { apiOp } from "./ops";
 import { unseen } from "./seen-outbox";
@@ -20,11 +21,25 @@ export function canMarkAgentSeen(s: Session, muted: boolean): boolean {
   return unseen(s) && (Boolean(s.view) || !muted || activityOf(s) === "unread");
 }
 
-export async function interruptAgent(mid: string, sid: string): Promise<void> {
-  // The hub gives the computer 90 s. An unknown outcome after a retry is not a confirmed stop.
-  const result = await apiOp<{ state?: string }>(`${sessionPath(mid, sid)}/interrupt`, { method: "POST", timeout: pastHub(90_000) });
-  if (result.state === "unknown") throw new Error(t("lib-new-agent.outcome_unknown"));
-  stopMessageFeedback(mid, sid);
+const pendingInterrupts = new Map<string, Promise<void>>();
+
+/** The row and chat can interrupt the same turn while its first request is still in flight. */
+export function interruptAgent(mid: string, sid: string): Promise<void> {
+  const path = `${sessionPath(mid, sid)}/interrupt`;
+  const requestKey = () => JSON.stringify([credentialOwner(), shownManager(), managerHeaderFor(path), path]);
+  const key = requestKey();
+  const pending = pendingInterrupts.get(key);
+  if (pending) return pending;
+  const current = () => requestKey() === key;
+  const request = apiOp<{ state?: string }>(path, { method: "POST", timeout: pastHub(90_000), isAuthContextCurrent: current })
+    .then((result) => {
+      if (!current()) throw new DOMException("Retired interrupt", "AbortError");
+      if (result.state === "unknown") throw new Error(t("lib-new-agent.outcome_unknown"));
+      stopMessageFeedback(mid, sid);
+    })
+    .finally(() => pendingInterrupts.delete(key));
+  pendingInterrupts.set(key, request);
+  return request;
 }
 
 async function putPins(next: AgentPins, done: string) {

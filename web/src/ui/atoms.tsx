@@ -444,7 +444,7 @@ export function Menu({
   container?: Element | null;
 }) {
   const id = useId();
-  const [openPath, setSubs] = useState<Sub[]>([]); // the open submenus: depth d (d ≥ 1) is subs[d - 1]
+  const [openPath, setSubs] = useState<Sub[]>([]); // one parent key per open submenu
   const [activeKeys, setActiveKeys] = useState<(string | undefined)[]>([]);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -494,6 +494,7 @@ export function Menu({
     if (index >= 0 && it?.key !== live.current.confirming) setConfirming(null);
   };
   const closeSubsTo = (depth: number) => {
+    if (live.current.subs.length > depth) ++loads.current;
     setSubs((s) => (s.length > depth ? s.slice(0, depth) : s));
     setActiveKeys((a) => (a.length > depth + 1 ? a.slice(0, depth + 1) : a));
   };
@@ -519,7 +520,10 @@ export function Menu({
     const settle = (patch: Partial<Sub>) => {
       if (loads.current !== token) return; // another row's submenu has replaced it since
       setSubs((s) => s.map((x, d) => (d === depth ? { ...x, ...patch, loading: false } : x)));
-      if (focus && patch.items) setActiveKeys((a) => [...a.slice(0, depth), it.key, patch.items!.find(enabled)?.key]);
+      if (focus && patch.items) {
+        const first = patch.items.find(enabled)?.key;
+        setActiveKeys((a) => a[depth] === it.key && a.length > depth + 1 ? [...a.slice(0, depth + 1), first] : a);
+      }
     };
     (it.children as () => Promise<MenuItem[]>)().then((list) => settle({ items: list }), (e) => settle({ error: errMessage(e) }));
   };

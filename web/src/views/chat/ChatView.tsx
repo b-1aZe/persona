@@ -13,7 +13,7 @@ import { canShowTerminal, composerSlot, otherView, terminalJump, terminalWaits, 
 import { invalidateOverviewPanel } from "../../lib/use-shortcuts";
 import { resumeInTerminal, terminalResume } from "../../lib/agent-resume";
 import { openLink } from "../../lib/links";
-import { closePanel, getPanel, openPanel, togglePanel, usePanel, useSidePanelBack } from "../../lib/panel";
+import { closePanel, getPanel, openPanel, togglePanel, usePanel, useSidePanelBack, type Panel } from "../../lib/panel";
 import { backgroundPanelOf, isWorkflowsCommand, latestWorkflowRun, openBackgroundPanel, provideBackgroundChat, WORKFLOWS_COMMAND } from "../../lib/background-panel";
 import { machineWithHub } from "../../lib/mesh";
 import { sidebarRail, sidebarShown, useLayout } from "../../lib/layout";
@@ -304,9 +304,17 @@ async function rewindTo(mid: string, sid: string, draftKey: string, items: Item[
   else if (!declared) toast(tr("rewind.input_kept"), "info");
 }
 
+/** A session's own pane can return to its chat. An independent Agent, task or link beside it stays open. */
+function panelBelongsToAgent(panel: Panel | null, mid: string, sid: string): boolean {
+  if (panel?.kind === "subagent") {
+    return (panel.parentMid ?? panel.mid) === mid && (panel.parentSid ?? splitSubagentLink(panel.sid)?.parent) === sid;
+  }
+  return Boolean(panel && panel.kind !== "agent" && "sid" in panel && panel.mid === mid && panel.sid === sid);
+}
+
 /** In a side panel (TaskPanel, AgentPanel; #3333, iOS #3255; opened while Agents open in the side panel, #5424): the
  *  chat's one-line header is the panel's only one. It closes the panel (× at its end), may stand for the task (its title,
- *  with `sub` in the title's tooltip), includes the panel's own actions in ⋯ and, beside the title, what the panel
+ *  with `sub` in the title's tooltip), starts ⋯ with the panel's own actions and, beside the title, what the panel
  *  puts there (a task's ⌄ to switch between its agents); the same space's other agents are left out. With `page`, a chat
  *  bubble before × opens the Agent shown as its own page (`/s/…`, as from the Agents list) and the panel closes. */
 export interface PanelChrome {
@@ -2518,7 +2526,7 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   const sideNeeds = sides.some((w) => stateOf(w) === "needs_you") || (!kids.loaded && (hubSide?.needs_you ?? 0) > 0);
   const toggleSide = useCallback(() => toggleSides(mid, sid, Boolean(sidesPanelOf(getPanel(), mid, sid))), [mid, sid]);
   const sideControl = useMemo(() => (sideCount > 0 ? { count: sideCount, open: sidesOpen, needs: sideNeeds, onToggle: toggleSide } : undefined), [sideCount, sidesOpen, sideNeeds, toggleSide]);
-  const subagentPanel = panel?.kind === "subagent" && (panel.parentMid ?? panel.mid) === mid && (panel.parentSid ?? splitSubagentLink(panel.sid)?.parent) === sid ? panel : undefined;
+  const subagentPanel = panel?.kind === "subagent" && panelBelongsToAgent(panel, mid, sid) ? panel : undefined;
   const subagentShown = panelDrawn && subagentPanel ? { mid: subagentPanel.mid, sid: subagentPanel.sid } : undefined;
   const subagentMid = subagentShown?.mid;
   const subagentSid = subagentShown?.sid;
@@ -3407,10 +3415,11 @@ export const Header = memo(function Header({
   const others = chrome ? [] : siblings.filter((s) => s.session_id !== session?.session_id);
   // the session's files and Git open in the side panel (docs/web/web.md "Side panel"); the assistant has none. Its terminal is
   // the page's other view, switched in place (view / onView)
-  const here = (p: typeof panel, kind: string) => Boolean(p && p.kind === kind && "sid" in p && session && p.mid === session.machine_id && p.sid === session.session_id);
+  const ownPanel = session && panelBelongsToAgent(panel, session.machine_id, session.session_id);
+  const here = (kind: Panel["kind"]) => Boolean(ownPanel && panel?.kind === kind);
   const showTerminal = Boolean(view && onView);
-  const isAgentMenu = Boolean(session && !session.assistant && !assistant && !main);
-  const panelVisible = !chrome && panel !== null && (!layout.maximized || narrow);
+  const isAgentMenu = Boolean(session && !session.assistant && !assistant && !main && !chrome);
+  const panelVisible = ownPanel && (!layout.maximized || narrow);
   const terminalVisible = showTerminal && view === "term";
   const backToChat = () => {
     if (terminalVisible) onView?.("chat");
@@ -3552,15 +3561,15 @@ export const Header = memo(function Header({
           ? [{ key: "takeover-continue", label: takeoverLabels.continueNew, icon: "compose" as const, disabled: takeoverBusy, onSelect: onContinueTakeover }]
           : []),
         ...(showFiles && phone ? [
-          { key: "files", label: t("chat-chatview.files"), icon: "folder" as const, checked: here(panel, "files"), onSelect: openFiles },
-          { key: "git", label: "Git", icon: "git" as const, checked: here(panel, "git"), onSelect: openGit },
+          { key: "files", label: t("chat-chatview.files"), icon: "folder" as const, checked: here("files"), onSelect: openFiles },
+          { key: "git", label: "Git", icon: "git" as const, checked: here("git"), onSelect: openGit },
         ] : []),
-        ...(showFiles && reviews ? [{ key: "review", label: t("chat-chatview.review_changes"), icon: "pullRequest" as const, checked: here(panel, "review"), onSelect: openReview }] : []),
+        ...(showFiles && reviews ? [{ key: "review", label: t("chat-chatview.review_changes"), icon: "pullRequest" as const, checked: here("review"), onSelect: openReview }] : []),
         ...tasksItem,
         ...sessionReviewItems,
         // a run of a comparison (#8916): back to its runs' page
         ...(compare ? [{ key: "compare", label: compare.label, icon: "branch" as const, onSelect: () => navigate({ name: "compare", id: compare.id }) }] : []),
-        ...(showFiles && previews ? [{ key: "preview", label: t("chat-chatview.preview"), icon: "web" as const, checked: here(panel, "preview"), onSelect: openPreview }] : []),
+        ...(showFiles && previews ? [{ key: "preview", label: t("chat-chatview.preview"), icon: "web" as const, checked: here("preview"), onSelect: openPreview }] : []),
         ...(allowed.includes("stop") ? [{ key: "stop", label: t("chat-chatview.interrupt"), icon: "stop" as const, hint: "Esc", onSelect: onInterrupt }] : []),
         ...(feishu ? [{ key: "feishu", label: t("chat-chatview.open_in_lark"), icon: "external" as const, onSelect: () => openLink(feishu) }] : []),
         ...(onActivity ? [{ key: "background-activity", label: t("chat-chatview.background_activity"), icon: "list" as const, onSelect: () => { void BackgroundActivity.preload().then(onActivity, onActivity); } }] : []),
@@ -3584,7 +3593,7 @@ export const Header = memo(function Header({
       ]
     : tasksItem;
   const panelItems = chrome?.items ?? [];
-  const items = isAgentMenu ? groupAgentMenu(own, panelItems)
+  const items = isAgentMenu ? groupAgentMenu(own)
     : panelItems.length && own.length ? [...panelItems, { ...own[0], divider: true }, ...own.slice(1)] : [...panelItems, ...own];
   // ⋯ sits at the right end of the header toolbar; on the main assistant page desktop uses the title pill on the left,
   // so ⋯ only appears on narrow screens when the shell switch hides the title.
@@ -3697,7 +3706,7 @@ export const Header = memo(function Header({
           {sides.needs && <span aria-hidden data-side-sessions-needs className="pointer-events-none absolute top-0.5 right-0.5 size-2 rounded-full bg-attention shadow-[0_0_0_2px_var(--page)]" />}
         </span>
       )}
-      {showFiles && <IconButton icon="folder" label={t("chat-chatview.files")} onClick={openFiles} active={here(panel, "files") || here(panel, "git")} className="hidden sm:flex" />}
+      {showFiles && <IconButton icon="folder" label={t("chat-chatview.files")} onClick={openFiles} active={here("files") || here("git")} className="hidden sm:flex" />}
       {/* the terminal: one button to the other view at every width (cindy's terminal is one of its right sidebar's tabs) */}
       {view && onView && (
         <span className="relative flex shrink-0">

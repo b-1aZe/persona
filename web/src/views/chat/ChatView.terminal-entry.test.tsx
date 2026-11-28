@@ -59,10 +59,10 @@ async function open(view: React.ReactElement, session = row()) {
 }
 const terminalButton = () => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("lib-terminals.terminal")}"]`);
 const dot = () => terminalButton()?.parentElement?.querySelector("[data-terminal-waits]") ?? null;
-async function menuItems(): Promise<string[]> {
+async function menuItems(underMore: boolean): Promise<string[]> {
   act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
   await settle();
-  openAgentMore();
+  if (underMore) openAgentMore();
   const items = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')].map((x) => x.textContent ?? "");
   act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
   return items;
@@ -75,11 +75,11 @@ it.each(["en", "zh-Hans", "ja"])("on the agent's page: localized terminal entrie
   expect(terminalButton()).not.toBeNull();
   expect(dot()).toBeNull();
   // The desktop's existing toolbar button owns Terminal; the phone puts it in ⋯.
-  expect((await menuItems()).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(false);
+  expect((await menuItems(true)).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(false);
 
   media.phone = true;
   await open(<ChatView key={`phone-${lang}`} mid="mac" sid="s1" inPage />);
-  expect((await menuItems()).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(true);
+  expect((await menuItems(true)).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(true);
 });
 
 it("in the side panel: the terminal button opens the agent's page in its terminal view and closes the panel", async () => {
@@ -89,7 +89,7 @@ it("in the side panel: the terminal button opens the agent's page in its termina
   try {
     await open(<ChatView mid="mac" sid="s1" panel={{ onClose, items: [] }} />);
     expect(terminalButton()).not.toBeNull();
-    expect((await menuItems()).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(false);
+    expect((await menuItems(false)).some((x) => x.includes(t("lib-terminals.terminal")))).toBe(false);
     act(() => terminalButton()!.click());
     expect(navigate).toHaveBeenCalledWith({ name: "session", mid: "mac", sid: "s1", view: "term" });
     expect(onClose).toHaveBeenCalled();
@@ -108,7 +108,6 @@ it("the side panel's localized terminal menu item opens the terminal page and cl
     await open(<ChatView mid="mac" sid="s1" panel={{ onClose, items: [] }} />);
     act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="${t("chat-chatview.more_actions")}"]`)!.click());
     await settle();
-    openAgentMore();
     const item = [...document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')]
       .find((x) => x.textContent?.includes(t("lib-terminals.terminal")));
     expect(item).toBeDefined();

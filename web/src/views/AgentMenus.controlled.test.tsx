@@ -13,7 +13,7 @@ import type { AgentRowMenuProps, MarkSeenDialogProps } from "./AgentMenus";
 
 const mocks = vi.hoisted(() => ({
   useStore: vi.fn(),
-  currentAgentMenuRow: vi.fn((s: Session) => s),
+  canInterruptAgentRow: vi.fn(() => true),
   getState: vi.fn(),
   markSeen: vi.fn(),
   markRowSeen: vi.fn(),
@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../lib/store", () => ({
   useStore: mocks.useStore,
-  currentAgentMenuRow: mocks.currentAgentMenuRow,
+  canInterruptAgentRow: mocks.canInterruptAgentRow,
   getState: mocks.getState,
   markSeen: mocks.markSeen,
   markRowSeen: mocks.markRowSeen,
@@ -210,12 +210,10 @@ describe("AgentMenus controlled mode", () => {
       t("agentmenus.mark_seen"), t("agentmenus.rename"), t("agentmenus.pin"), t("sidebar.more"), t("agentmenus.close"),
     ]);
     openAgentMore();
-    const secondary = menuLabels(1);
-    expect(secondary.at(-1)).toBe(t("agentmenus.delete_chat"));
-    expect(secondary.sort()).toEqual([
-      t("agentmenus.mute"), t("agentmenus.hand_to_persona"), t("agentmenus.move_to_other_todo"), t("agentmenus.unlink"),
-      t("agentmenus.copy_folder"), t("agentmenus.copy_resume"), "Git", t("lib-node-actions.copy_session_id"), t("agentmenus.delete_chat"),
-    ].sort());
+    expect(menuLabels(1)).toEqual([
+      t("agentmenus.mute"), t("agentmenus.move_to_other_todo"), t("agentmenus.unlink"), t("agentmenus.hand_to_persona"),
+      t("lib-node-actions.copy_session_id"), t("agentmenus.copy_folder"), t("agentmenus.copy_resume"), "Git", t("agentmenus.delete_chat"),
+    ]);
     await act(async () => { menuButton(t("agentmenus.mark_seen"))!.click(); });
     expect(mocks.markRowSeen).toHaveBeenCalledWith(s);
   });
@@ -245,7 +243,7 @@ describe("AgentMenus controlled mode", () => {
     const busy = baseSession({ state: "working", status: "working", capabilities: { interrupt: true } });
     const items = agentRowMenuItems(busy, { muted: false, pinned: false, features: [], onRename: vi.fn(), onDelete: vi.fn() });
     const stop = items.find((item) => item.key === "stop")!;
-    mocks.currentAgentMenuRow.mockReturnValueOnce(baseSession());
+    mocks.canInterruptAgentRow.mockReturnValueOnce(false);
     await stop.onSelect();
     expect(mocks.interruptAgent).not.toHaveBeenCalled();
     mocks.interruptAgent.mockResolvedValueOnce(undefined);

@@ -15,7 +15,7 @@ const media = vi.hoisted(() => {
   })) as typeof window.matchMedia;
   return state;
 });
-import { Menu } from "./atoms";
+import { Menu, type MenuItem } from "./atoms";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -169,4 +169,22 @@ it("keeps keyboard selection on the same command across a submenu update", () =>
   paint(["delete"]);
   press("Enter");
   expect(run).not.toHaveBeenCalled();
+});
+
+it("ignores a lazy submenu's result after the keyboard has left it", async () => {
+  let loaded!: (items: MenuItem[]) => void;
+  const done = vi.fn();
+  const list = new Promise<MenuItem[]>((resolve) => { loaded = resolve; });
+  act(() => root.render(<Menu anchor={anchor} onClose={() => {}} items={[
+    { key: "launch", label: "Launch", onSelect: () => {}, children: () => list },
+    { key: "done", label: "Done", onSelect: done },
+  ]} />));
+  const press = (key: string) => act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key })); });
+  press("Home");
+  press("ArrowRight");
+  press("ArrowLeft");
+  press("ArrowDown");
+  await act(async () => loaded([]));
+  press("Enter");
+  expect(done).toHaveBeenCalledOnce();
 });

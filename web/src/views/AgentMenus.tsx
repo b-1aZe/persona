@@ -9,7 +9,7 @@ import { closeAgentAction } from "../lib/close-agent";
 import { machineWithHub } from "../lib/mesh";
 import { isPinned } from "../lib/pins";
 import { isMuted } from "../lib/session-actions";
-import { currentAgentMenuRow, getState, markRowSeen, refresh, refreshTodos, useStore } from "../lib/store";
+import { canInterruptAgentRow, getState, markRowSeen, refresh, refreshTodos, useStore } from "../lib/store";
 import { unlinkAgentFromTodo } from "../lib/todos";
 import type { Session } from "../lib/types";
 import { nodeActions, sessionNode, type NodeActionDeps } from "../lib/node-actions";
@@ -79,7 +79,7 @@ export function agentRowMenuItems(s: Session, o: AgentRowMenuItemsOptions): Menu
       key: "stop", label: t("chat-chatview.interrupt"), icon: "stop" as const,
       onSelect: () => {
         if (o.onInterrupt) return runControlled(() => o.onInterrupt!(own), o.onNotice);
-        if (!sessionMenuActions(currentAgentMenuRow(own)).includes("stop")) return;
+        if (!canInterruptAgentRow(own)) return;
         return interruptAgent(s.machine_id, s.session_id).then(
           () => toast(t("chat-chatview.interrupted")),
           (e) => toast(t("chat-chatview.interrupt_failed", { error: errorText(e) }), "error"),
