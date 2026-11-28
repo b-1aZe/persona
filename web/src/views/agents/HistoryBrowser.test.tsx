@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n";
@@ -81,6 +81,34 @@ describe("HistoryBrowser", () => {
     expect(vi.mocked(navigate).mock.calls).toEqual([[{ name: "tab", mid: "one", sid: "resume", space: "new-space", slot: "new-tab" }]]);
   });
 
+  it.each([false, true])("follows the resumed Agent when the shell resolves the previous tab (same render = %s)", async sameRender => {
+    const router = await vi.importActual<typeof import("../../lib/router")>("../../lib/router");
+    const original = location.href;
+    vi.mocked(navigate).mockImplementation(router.navigate);
+    try {
+      router.navigate({ name: "session", mid: "one", sid: "already-open", work: true });
+      let accept!: (response: Response) => void;
+      const { starts } = hub(() => env.rows, () => new Promise(resolve => { accept = resolve; }));
+      function Shell({ detailArrived }: { detailArrived: boolean }) {
+        useEffect(() => {
+          if (detailArrived) router.navigate({ name: "tab", mid: "one", space: "old", slot: "retained", sid: "already-open", work: true }, true);
+        }, [detailArrived]);
+        return <HistoryBrowser />;
+      }
+      await act(async () => root.render(<Shell detailArrived={false} />));
+      await act(async () => resumeButton().click());
+      if (!sameRender) await act(async () => root.render(<Shell detailArrived />));
+      await act(async () => accept(Response.json({})));
+      env.rows = [live()];
+      await act(async () => root.render(<Shell detailArrived />));
+      expect(starts).toHaveBeenCalledTimes(1);
+      expect(location.pathname + location.search).toBe("/t/one/new-space/new-tab/resume");
+    } finally {
+      vi.mocked(navigate).mockReset();
+      history.replaceState(null, "", original);
+    }
+  });
+
   it("keeps a refused resume in History and shows the error", async () => {
     const { starts } = hub(() => [], async () => Response.json({ error: "Resume refused" }, { status: 409 }));
     await render();
@@ -103,9 +131,12 @@ describe("HistoryBrowser", () => {
     expect(vi.mocked(navigate).mock.calls).toEqual([[{ name: "tab", mid: "one", sid: "resume", space: "new-space", slot: "new-tab" }]]);
   });
 
-  it("opens the session when its full lookup reports no tab, even if History still lists the old tab", async () => {
+  it.each([
+    { status: "idle", space_id: undefined, slot_id: undefined },
+    { status: "unknown", state: "unknown", pane_id: "herdr-core:live", space_id: "dir:/test", slot_id: undefined },
+  ] satisfies Partial<Session>[])("opens the session when the full lookup reports $status with no tab", async fields => {
     env.features = ["sessions_lookup"];
-    const { reads } = hub(() => [live({ space_id: undefined, slot_id: undefined })]);
+    const { reads } = hub(() => [live(fields)]);
     await render();
     await act(async () => resumeButton().click());
     expect(reads).toHaveBeenCalledTimes(1);

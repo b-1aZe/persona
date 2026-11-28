@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { formatDate, t } from "../../i18n";
 import { credentialOwner } from "../../lib/api";
 import { withoutBotmux } from "../../lib/agent-filter";
@@ -11,7 +11,7 @@ import { machineWithHub } from "../../lib/mesh";
 import { paneRoute } from "../../lib/herdr-tree";
 import { LAUNCH_HANDOFF_MS } from "../../lib/launch-handoff";
 import { useRuntimeSession } from "../../lib/runtime-session";
-import { navigate } from "../../lib/router";
+import { navigate, routeAt, routePath } from "../../lib/router";
 import { runtimeIdentity, SESSIONS_LOOKUP_FEATURE } from "../../lib/runtime-list";
 import { RUNTIME_SEARCH_FEATURE, RuntimeSearchModel } from "../../lib/runtime-search";
 import { historyGroups, historySessions } from "../../lib/session-history";
@@ -32,6 +32,14 @@ interface ResumeTarget {
   accepted: boolean;
 }
 
+function stillAtResumeOrigin(origin: string) {
+  if (location.href === origin) return true;
+  const before = routeAt(origin), now = routeAt(location.href);
+  // The shell replaces a session URL with its tab URL once that session's detail arrives.
+  return before?.name === "session" && now?.name === "tab" && !!now.sid &&
+    routePath(before) === routePath({ ...now, name: "session", sid: now.sid });
+}
+
 // The row leaves History as soon as it becomes live, which can happen before the POST returns.
 function ResumeDestination({ target, listed, lookup, finish }: {
   target: ResumeTarget; listed?: Session; lookup: boolean; finish: (row?: Session) => void;
@@ -39,15 +47,17 @@ function ResumeDestination({ target, listed, lookup, finish }: {
   const { machine_id, session_id } = target.session;
   const { detail } = useRuntimeSession(machine_id, session_id, lookup);
   const row = lookup && !detail.legacy ? detail.snapshot?.row : listed;
-  const opened = useRef(false);
   useEffect(() => {
-    if (!row || row.deleted || row.starting || opened.current) return;
+    if (!row || row.deleted || row.starting) return;
     const live = ["idle", "working", "blocked", "done"].includes(row.status) ||
-      (row.status === "unknown" && Boolean(row.space_id && row.slot_id));
-    if (live) {
-      opened.current = true;
-      finish(location.href === target.origin ? row : undefined);
-    }
+      (row.status === "unknown" && Boolean(row.pane_id || (row.space_id && row.slot_id)));
+    if (!live) return;
+    // Let the shell finish replacing the previous session's URL in this render before opening the resumed Agent.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) finish(stillAtResumeOrigin(target.origin) ? row : undefined);
+    });
+    return () => { cancelled = true; };
   }, [row, target.origin, finish]);
   useEffect(() => {
     const timer = setTimeout(finish, LAUNCH_HANDOFF_MS);
