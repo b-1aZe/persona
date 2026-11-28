@@ -699,7 +699,7 @@ final class DirectionScreensUITests: XCTestCase {
         more.tap()
         sleep(1)
         app.openAgentMenuMore() // Copy Directory is More's (#13396)
-        XCTAssertTrue(app.buttons[word("Copy Directory", "拷贝目录", "ディレクトリをコピー")].firstMatch.waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons[word("Copy Path", "拷贝目录", "パスをコピー")].firstMatch.waitForExistence(timeout: 5),
                       "the Agent's menu did not open:\n\(app.debugDescription)")
         shot("off-agent-menu-\(off)")
     }

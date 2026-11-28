@@ -7,13 +7,13 @@ struct WorktreeSidebarMenu: View, Equatable {
 
         var title: LocalizedStringResource {
             switch self {
-            case .open: LocalizedStringResource("worktree.open", defaultValue: "Open Worktree")
-            case .newSession: "New Session [Chats View 58e21b]"
+            case .open: "Open Tree [Agent Menu]"
+            case .newSession: "New Session [Agent Menu]"
             case .newChild: "New Child Worktree"
             case .rename: "Rename Worktree"
             case .copyPath: "Copy Path"
-            case .copyName: LocalizedStringResource("worktree.copyName", defaultValue: "Copy Worktree Name")
-            case .openParent: LocalizedStringResource("worktree.openParent", defaultValue: "Open Parent Worktree")
+            case .copyName: "Copy Name [Agent Menu]"
+            case .openParent: "Open Parent [Agent Menu]"
             }
         }
 

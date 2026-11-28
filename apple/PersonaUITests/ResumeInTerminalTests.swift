@@ -118,9 +118,11 @@ final class ResumeInTerminalTests: XCTestCase {
             openMenu()
             shot("no-engine-menu")
             if !before {
-                let unavailable = app.buttons["无法恢复：无终端"].firstMatch
-                XCTAssertTrue(unavailable.exists, "the disabled item explains why it cannot resume")
-                XCTAssertFalse(unavailable.isEnabled)
+                XCTAssertTrue(resumeItem.exists)
+                XCTAssertFalse(resumeItem.isEnabled)
+                let reason = "Mac mini 没有启用终端引擎"
+                XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", reason)).firstMatch.exists
+                              || resumeItem.label.contains(reason), "the menu names the computer without a terminal engine")
             }
             closeMenu()
             app.terminate()

@@ -397,10 +397,12 @@ struct AgentActionMenu: View, Equatable {
             Button { handlers.navigate(s, .subagents) } label: {
                 label(item.id, Theme.Icon.subagent)
             }
+            .accessibilityValue(Text(facts.subagentCount, format: .number))
         case .sideSessions:
             Button { handlers.navigate(s, .sideSessions) } label: {
                 label(item.id, Theme.Icon.sideSessions)
             }
+            .accessibilityValue(Text(facts.sideCount, format: .number))
             .accessibilityIdentifier("side-sessions-menu")
         case .space:
             Button { handlers.navigate(s, .space) } label: { label(item.id, Theme.Icon.space) }
@@ -480,9 +482,14 @@ struct AgentActionMenu: View, Equatable {
                 }
                 .accessibilityIdentifier("chat-resume-terminal")
             case .noEngine:
-                Button {} label: { label(item.id, Theme.Icon.resume) }
-                .disabled(true)
-                .accessibilityIdentifier("chat-resume-terminal")
+                let machine = model.machine(facts.key.machineRef)?.name ?? facts.key.machineID
+                let reason = Text("No terminal engine on \(machine)", comment: "Why Resume in Terminal is off: the computer enables no terminal engine")
+                Section {
+                    Button {} label: { label(item.id, Theme.Icon.resume) }
+                        .disabled(true)
+                        .accessibilityHint(reason)
+                        .accessibilityIdentifier("chat-resume-terminal")
+                } header: { reason }
             case .hidden:
                 EmptyView()
             }
@@ -525,21 +532,21 @@ extension AgentActionItem.ID {
     /// A command title stays bounded even when its linked to-do or computer has a long name.
     @MainActor func menuTitle(in facts: AgentActionFacts) -> LocalizedStringResource {
         switch self {
-        case .backToChat: "Back to Chat"
+        case .backToChat: "Back to Chat [Agent Menu]"
         case .files, .git:
             if let badge = facts.paneBadges[self == .files ? .files : .git] {
                 "\(self == .files ? SessionPane.files.title : SessionPane.git.title) (\(badge))"
             } else {
                 self == .files ? "Files" : "Git"
             }
-        case .review: "Review Changes"
+        case .review: "Review [Agent Menu]"
         case .preview: "Preview"
-        case .subagents: "Subagents (\(facts.subagentCount)) [Agent Menu]"
-        case .sideSessions: SideSessionsSheet.titleResource(facts.sideCount)
+        case .subagents: "Children \(CountBadge.text(facts.subagentCount) ?? "0") [Agent Menu]"
+        case .sideSessions: "Threads \(CountBadge.text(facts.sideCount) ?? "0") [Agent Menu]"
         case .space: "Space Agents"
         case .attach: "Attach Live"
         case .interrupt: "Interrupt [Composer Buttons f9d193]"
-        case .markSeen: "Mark as Seen"
+        case .markSeen: "Mark Seen [Agent Menu]"
         case .takeover: "Take over"
         case .continueInNewSession: "Continue in New Chat"
         case .rename: "Rename Agent"
@@ -549,16 +556,16 @@ extension AgentActionItem.ID {
         case .todo: "Open Linked To-do"
         case .screen: AgentActionItem.screenTitle
         case .moveTodo: "Change Linked To-do"
-        case .linkTodo: "Link to To-Do"
-        case .unlinkTodo: "Unlink"
+        case .linkTodo: "Link To-do [Agent Menu]"
+        case .unlinkTodo: "Unlink [Agent Menu]"
         case .moveTo: MoveToChoices.agentTitle
         case .stopLoop: "Stop Loop"
-        case .handToPersona: "Hand to Persona"
-        case .copyDirectory: "Copy Directory"
+        case .handToPersona: "To Persona [Agent Menu]"
+        case .copyDirectory: "Copy Path [Agent Menu]"
         case .terminal: "Terminal"
         case .copyResume: "Copy Resume Cmd"
-        case .resume: facts.terminalResume == .noEngine ? "Resume: No Terminal" : "Resume in Terminal"
-        case .splitPane: "Split Pane"
+        case .resume: "Resume [Agent Menu]"
+        case .splitPane: "Split Pane [Agent Menu]"
         case .splitRight: NodeMenu.Direction.right.titleResource
         case .splitDown: NodeMenu.Direction.down.titleResource
         case .nodeGit: "Git"

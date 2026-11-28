@@ -9,6 +9,10 @@ import UIKit
     private let font = UIFont.preferredFont(forTextStyle: .body,
                                             compatibleWith: UITraitCollection(preferredContentSizeCategory: .large))
 
+    // At the largest accessibility setting a native iPhone action menu wraps “Rename Agent”,
+    // while “Auto Rename” still fits. Keep every command within that observed one-line budget.
+    private let accessibilityMenuFont = UIFont.systemFont(ofSize: 24)
+
     private func text(_ resource: LocalizedStringResource, language: String) -> String {
         var localized = resource
         localized.locale = Locale(identifier: language)
@@ -20,7 +24,24 @@ import UIKit
         let width = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         #expect(!title.isEmpty && title.rangeOfCharacter(from: .newlines) == nil)
         #expect(!title.contains("…") && !title.contains("..."), "\(language): \(title)")
+        let attributes: [NSAttributedString.Key: Any] = [.font: accessibilityMenuFont]
+        let largeWidth = ceil((title as NSString).size(withAttributes: attributes).width)
+        let largeBudget = ceil(("Auto Rename" as NSString).size(withAttributes: attributes).width) + 3
+        #expect(largeWidth <= largeBudget, "\(language): ‘\(title)’ needs \(largeWidth) pt of \(largeBudget) pt at large text")
         #expect(width <= titleWidth, "\(language): ‘\(title)’ needs \(width) pt of \(titleWidth) pt")
+    }
+
+    @Test(arguments: [99, 100])
+    func countedCommandsKeepExactCountsForVoiceOver(_ count: Int) throws {
+        let json = #"{"machine_id":"m","session_id":"s","title":"Test","cwd":"/work","status":"idle","running_subagents":\#(count)}"#
+        let session = try JSON.decoder.decode(Session.self, from: Data(json.utf8))
+        let facts = AgentActionFacts(session: session, sideCount: count)
+        #expect(facts.subagentCount == count)
+        #expect(facts.sideCount == count)
+        let badge = count == 99 ? "99" : "99+"
+        for id in [AgentActionItem.ID.subagents, .sideSessions] {
+            #expect(text(id.menuTitle(in: facts), language: "en").contains(badge))
+        }
     }
 
     @Test(arguments: ["en", "zh-Hans", "ja"])
