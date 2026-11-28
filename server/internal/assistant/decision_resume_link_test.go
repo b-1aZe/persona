@@ -310,8 +310,11 @@ func TestDecisionTerminalRecoveryDuringArchiveLookup(t *testing.T) {
 func TestDecisionTerminalCleansExpiredRefusalsOnReview(t *testing.T) {
 	now := time.Now().UTC()
 	key := resumeAttempt{todo: "task", reviewer: "supervisor", agent: SessionRef{MachineID: "machine", SessionID: "worker"}}
-	b := todoBook{todos: map[string]*Todo{"task": {ID: "task", Agents: []TodoAgent{{MachineID: "machine", SessionID: "worker"}}}},
-		refusedResumes: map[resumeAttempt]time.Time{key: now.Add(-2 * decisionRecheckAfter)}}
+	b := todoBook{
+		todos:           map[string]*Todo{"task": {ID: "task", Agents: []TodoAgent{{MachineID: "machine", SessionID: "worker"}}}},
+		activeBySession: map[[2]string]string{{"machine", "worker"}: "task"},
+		refusedResumes:  map[resumeAttempt]time.Time{key: now.Add(-2 * decisionRecheckAfter)},
+	}
 	if target := b.takeResumeTerminal("task", "supervisor", now); target != nil || len(b.refusedResumes) != 0 {
 		t.Fatalf("expired refusal, target=%v, remaining=%d", target, len(b.refusedResumes))
 	}
