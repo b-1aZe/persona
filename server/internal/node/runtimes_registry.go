@@ -20,7 +20,6 @@ type runtimeRegistry struct {
 	conns  map[int]*runtimeConn
 	// Only a node-directed start can bind protected command input to a session.
 	inputBindings map[string]*runtimeInputBinding
-	inputClaims   map[runtimeInputOccurrence]runtimeInputClaim
 	// owner: session id -> the runtime listing it (the newest connection wins when two list the same id).
 	owner map[string]*runtimeConn
 	// watching: sessions the hub watches -> the last seq pushed for each, so a runtime that reconnects is asked to

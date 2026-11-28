@@ -485,10 +485,24 @@ func TestRuntimeCommandInputUnknownThenRefusedRetry(t *testing.T) {
 	waitFor(t, "disconnected", func() bool { return n.runtimes.ownerOf(card.SessionID) == nil })
 	again := inputRuntime(t, n, "toy", true)
 	again.binding = rt.binding
-	pushInputRevision(t, n, again, 1, "working", "one")
-	if len(n.runtimes.inputCards()) != 0 {
-		t.Fatal("a rejected retry erased the uncertain first delivery")
+	pushInputRevision(t, n, again, 1, "offline", "one")
+	// While the session stays listed, the SDK omits its wait. Advance past the
+	// old delivery-record lifetime before advertising the original wait again.
+	if cards := n.runtimes.inputCardsAt(time.Now().Add(2 * agyInputMaxAge)); len(cards) != 0 {
+		t.Fatal("offline session offered input")
 	}
+	pushInputRevision(t, n, again, 2, "working", "one")
+	if len(n.runtimes.inputCards()) != 0 {
+		t.Fatal("the original occurrence was offered again after a quiet reconnect")
+	}
+	if err := answerRuntimeCard(t, n, card, true, "again"); refusalCode(err) != screen.PromptChanged {
+		t.Fatalf("old card after reconnect: %v", err)
+	}
+	if len(again.got("session.input")) != 0 {
+		t.Fatal("the reconnect delivered an answer for the old occurrence")
+	}
+	pushInputRevision(t, n, again, 3, "working", "next")
+	nextInputCard(t, n, card.ID)
 }
 
 func TestRuntimeCommandInputQuietReconnectPreservesBinding(t *testing.T) {
