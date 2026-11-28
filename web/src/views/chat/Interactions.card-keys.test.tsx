@@ -116,6 +116,18 @@ describe("a card answering from the keyboard", () => {
     }
   });
 
+  it("keeps the Bash source visibly linked with an expanded hit area outside the truncated text", () => {
+    const title = "Release review ".repeat(12).trim();
+    act(() => root.render(<InteractionCard ix={{ ...permission, session_title: title }} />));
+    const link = host.querySelector<HTMLAnchorElement>("[data-permission-from] a")!;
+    // Matching vertical padding and negative margins grow the hit area without moving the command or answers.
+    expect([...link.classList]).toEqual(expect.arrayContaining(["underline", "py-4", "-my-4"]));
+    expect(link.classList).not.toContain("truncate");
+    const text = link.querySelector("span.truncate");
+    expect(text?.textContent).toContain(title);
+    expect(link.closest("[title]")?.getAttribute("title")).toBe(text?.textContent);
+  });
+
   it("opens the original card from a main-chat copy and leaves an orphaned copy unlinked", async () => {
     const original = { ...permission, session_title: "Source chat", agent: "codex" };
     const copy = { ...original, id: "copy", mirror_of: original.id, machine_id: "main-computer", session_id: "main" };

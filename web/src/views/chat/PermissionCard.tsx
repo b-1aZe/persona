@@ -135,13 +135,13 @@ export function PermissionBody({ ix, sourceLabel, sourceHref, onOpenSource }: { 
     <div className="flex flex-col gap-2">
       {from &&
         (sourceHref ? (
-          <p data-permission-from title={from} className="min-w-0 text-[12px] leading-snug text-ink-3">
+          <p data-permission-from title={from} className="flex min-w-0 text-[12px] leading-snug text-ink-3">
             <a
               href={sourceHref}
               onClick={openSource}
-              className="inline-block max-w-full truncate rounded-sm align-top underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:text-ink focus-visible:underline focus-visible:outline-2 focus-visible:outline-offset-2"
+              className="relative -my-4 flex w-full min-w-0 items-center rounded-sm py-4 underline underline-offset-2 transition-colors hover:text-ink focus-visible:text-ink focus-visible:outline-2 focus-visible:outline-offset-2"
             >
-              {from}
+              <span className="truncate">{from}</span>
             </a>
           </p>
         ) : (
