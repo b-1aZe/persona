@@ -1,5 +1,8 @@
 {
   "title": "Subscription limits",
+  "edit_alias": "Edit alias for {name}",
+  "alias_prompt": "Alias for {name} (up to {limit} characters). Leave blank to use the original name.",
+  "alias_too_long": "Use {limit} characters or fewer.",
   "stale_title": "Data is out of date",
   "stale_age": "Out of date · {age}",
   "left_short": "{percent} left",

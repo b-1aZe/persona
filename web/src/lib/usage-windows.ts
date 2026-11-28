@@ -264,6 +264,11 @@ export function isHistoricalCodexReading(a: UsageAccount): boolean {
   return a.reading_source === "rollout" && a.stale === true && canonicalUsageProvider(a.provider) === "codex";
 }
 
+/** The hub's public Codex row ID survives quota resets. Saved session readings can describe an unidentified source. */
+export function canAliasUsageAccount(a: UsageAccount): boolean {
+  return Boolean(a.id) && canonicalUsageProvider(a.provider) === "codex" && a.reading_source !== "rollout";
+}
+
 /** The sidebar takes the two accounts with lowest headroom `h = r - R`, with stale accounts last. Rank whole
  *  percentages as displayed so sub-percent jitter keeps the same order. Balance accounts have their own rows. */
 export function topAccounts(accounts: UsageAccount[], n = 2): UsageAccount[] {

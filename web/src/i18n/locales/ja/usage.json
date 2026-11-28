@@ -1,5 +1,8 @@
 {
   "title": "サブスクリプションの利用上限",
+  "edit_alias": "「{name}」の別名を編集",
+  "alias_prompt": "「{name}」の別名（{limit} 文字以内）。空欄にすると元の名前に戻ります。",
+  "alias_too_long": "別名は {limit} 文字以内で入力してください。",
   "stale_title": "データが古くなっています",
   "stale_age": "古いデータ · {age}",
   "left_short": "残り {percent}",
