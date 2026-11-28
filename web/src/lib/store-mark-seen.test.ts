@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
-import { runtimeAgents } from "./runtime-list";
+import { runtimeAgents, runtimeIdentity } from "./runtime-list";
 import { getSeenVisit } from "./seen-rows";
 import { canInterruptAgentRow, connect, getState, markRowSeen, markSeen, reset, subscribe, upsertSession } from "./store";
 import type { Session } from "./types";
@@ -63,16 +63,31 @@ describe("marking fallback-only sessions seen", () => {
     expect(api).not.toHaveBeenCalled();
   });
 
-  it("uses the newer row when a paged menu and the retained detail disagree", () => {
+  it.each([undefined, "2025-12-28T00:00:00Z"])("uses the newer row when a paged menu and the retained detail disagree (previous receipt %s)", (previousSeenAt) => {
     const fresh = row("new-turn", { waiting: false, updated_at: "2025-12-31T00:00:00Z" });
-    upsertSession(row("new-turn", { state: "working", updated_at: "2025-12-29T00:00:00Z", agent_name: "Retained name" }));
+    upsertSession(row("new-turn", { state: "working", updated_at: "2025-12-29T00:00:00Z", seen_at: previousSeenAt, agent_name: "Retained name" }));
     markRowSeen(fresh);
     expect(api).toHaveBeenCalledExactlyOnceWith("/sessions/demo/new-turn/seen", { method: "POST" });
-    expect(getState().sessions.demo[0]).toMatchObject({ state: "idle", agent_name: "Retained name" });
+    const detail = getState().sessions.demo[0];
+    expect(detail.state).toBe("idle");
+    expect(detail).toMatchObject({ agent_name: "Retained name", seen_at: "2026-01-01T00:00:00.000Z" });
+    const mark = getState().seen[runtimeIdentity(fresh)];
+    expect(mark.localSeenAt).toBe(detail.seen_at);
+    expect(mark.recordedAt).toBeUndefined(); // only the hub can acknowledge the receipt
     upsertSession(row("new-turn", { state: "working", updated_at: "2026-01-02T00:00:00Z" }));
     markRowSeen(fresh);
     expect(api).toHaveBeenCalledTimes(1);
     expect(getState().sessions.demo[0].state).toBe("working");
+  });
+
+  it("records the local receipt when the menu uses the retained detail itself", () => {
+    const given = row("retained", { seen_at: "2025-12-28T00:00:00Z" });
+    upsertSession(given);
+    markRowSeen(getState().sessions.demo[0]);
+    const detail = getState().sessions.demo[0];
+    expect(detail).toMatchObject({ state: "idle", seen_at: "2026-01-01T00:00:00.000Z" });
+    markRowSeen(given);
+    expect(api).toHaveBeenCalledExactlyOnceWith("/sessions/demo/retained/seen", { method: "POST" });
   });
 
   it("sends each supplied unread identity once and retains only acted-on rows in one update", () => {

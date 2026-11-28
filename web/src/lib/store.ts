@@ -1441,7 +1441,7 @@ export function markRowSeen(shown: Session) {
   if (s.deleted || !unseen(s)) return;
   const cached = state.sessions[s.machine_id]?.find((row) => row.session_id === s.session_id);
   // A newer list summary updates only an existing detail's list fields. Keep paged-only summaries off the detail cache.
-  const updated = cached && cached !== s ? { ...listedOver(cached, s), waiting: cached.waiting } : undefined;
+  const updated = cached && (cached === s ? cached : { ...listedOver(cached, s), waiting: cached.waiting });
   markSingleSeen(s, updated);
 }
 
@@ -2267,14 +2267,16 @@ export function markSeenLocally(mid: string, sid: string) {
 }
 
 function markSingleSeen(s: Session, updatedDetail?: Session): boolean {
-  const mark = newMark(s, Date.now());
+  const now = Date.now();
+  const localSeenAt = updatedDetail ? new Date(now).toISOString() : undefined;
+  const mark = newMark(s, now, localSeenAt);
   if (!mark) return false;
   const id = runtimeIdentity(s);
   if (activityOf(s) === "unread" || justFinished(s, state.mutes)) {
     recordMarkedSeen(s, activityOf(s) === "idle" ? "just_finished" : "unread", viewed.has(id));
   }
   const seen = { ...state.seen, [id]: deliverSeen(s.machine_id, s.session_id, mark) };
-  if (updatedDetail) applyCompleteSessions([updatedDetail], [], { seen });
+  if (updatedDetail) applyCompleteSessions([{ ...seenCopy(updatedDetail), seen_at: localSeenAt }], [], { seen });
   else set({ seen });
   scheduleSeenCheck();
   return true;
