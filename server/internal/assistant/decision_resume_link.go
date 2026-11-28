@@ -2,8 +2,13 @@ package assistant
 
 import (
 	"maps"
+	"slices"
 	"time"
+
+	"github.com/nwverse/persona/server/internal/proto"
 )
+
+type reworkReviewerKey struct{}
 
 // A resume refusal belongs to the conversation that tried it and the exact Agent it tried to resume.
 type resumeAttempt struct {
@@ -24,6 +29,18 @@ func (b *acceptBook) noteResumeAttempt(attempt resumeAttempt, ownerOnly bool) {
 		b.refusedResumes = make(map[resumeAttempt]time.Time)
 	}
 	b.refusedResumes[attempt] = now
+}
+
+// A fresh node list that reports the Agent running retires the pending refusal, including after an owner resume.
+func (b *acceptBook) observeResumedSessions(d DeviceSessions) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	maps.DeleteFunc(b.refusedResumes, func(attempt resumeAttempt, _ time.Time) bool {
+		return attempt.agent.MachineID == d.MachineID && slices.ContainsFunc(d.Sessions, func(c proto.Session) bool {
+			return c.SessionID == attempt.agent.SessionID && !c.Archived && !stoppedAgent(c) &&
+				(c.Status == proto.StatusWorking || c.Capabilities != nil && c.Capabilities.Send)
+		})
+	})
 }
 
 // takeResumeTerminalLocked consumes the reviewer's pending refusals for this task. Only one current binding may

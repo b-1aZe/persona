@@ -85,13 +85,13 @@ func terminalResumeLabel(label string) bool {
 
 // decisionTerminal returns a task-owned target. An archived/released binding is
 // never used to redirect an owner's recovery action to another Agent.
-func decisionTerminal(t Todo, label string) *SessionRef {
+func decisionTerminal(t Todo, label string, asked time.Time) *SessionRef {
 	if !terminalResumeLabel(label) {
 		return nil
 	}
 	var match *SessionRef
 	for _, a := range t.Agents {
-		if !a.active() || len(a.SessionID) < 8 || !strings.Contains(strings.ToLower(label), strings.ToLower(a.SessionID[:8])) {
+		if !a.active() || a.LinkedAt.After(asked) || len(a.SessionID) < 8 || !strings.Contains(strings.ToLower(label), strings.ToLower(a.SessionID[:8])) {
 			continue
 		}
 		if match != nil {
@@ -492,6 +492,14 @@ func (s *Service) answerDecisionText(ctx context.Context, id, asked, text string
 	return result, err
 }
 
+// A text answer can repeat a legacy manual control verbatim. Only match a choice on this decision:
+// ordinary feedback may also mention resuming in a terminal.
+func (a *acceptAsk) manualTerminalAnswer(text string) bool {
+	text = strings.TrimSpace(text)
+	return decideAsk(a) && a.OutsideID == "" && terminalResumeLabel(text) &&
+		(text == a.Recommend || slices.ContainsFunc(a.Options, func(o DecisionOption) bool { return text == o.Label }))
+}
+
 // answerDecisionTextLocked answers task t's decision with text, its caller holding t's action lock: relayed to its
 // Agent in its origin conversation (none for a to-do no conversation opened, as chooseOption relays), recorded as a
 // manual decision whose source is the routed item, the round ended. undeliverable: words no Agent can take are
@@ -505,6 +513,9 @@ func (s *Service) answerDecisionTextLocked(ctx context.Context, st todoStore, t 
 	if a.OutsideID != "" {
 		result, err := s.answerOutside(ctx, id, asked, outsideAnswer{Text: decisionText(text)}, false)
 		return FeedItem{}, result, err
+	}
+	if a.manualTerminalAnswer(text) {
+		return FeedItem{}, acceptResult{}, i18n.Err("assistant-reports.manual_terminal_resume")
 	}
 	completeDismissal, err := s.prepareDismissalForAnswer(ctx, t)
 	if err != nil {

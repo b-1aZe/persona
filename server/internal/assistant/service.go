@@ -1363,6 +1363,7 @@ func (s *Service) SessionsChanged(ctx context.Context, d DeviceSessions) {
 	if f := s.sessionsSeen; f != nil {
 		f(d)
 	}
+	s.accept.observeResumedSessions(d)
 	s.noteNodeOnline(d.MachineID, time.Now())
 	s.toolLoopsChanged(d)
 	s.progressSessions(d, time.Now()) // what the working agents do, for no_progress (supervise_progress.go)

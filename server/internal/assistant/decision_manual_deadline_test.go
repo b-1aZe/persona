@@ -124,3 +124,26 @@ func TestTerminalResumeReplacesDueDefault(t *testing.T) {
 		t.Fatalf("new round received %d reminders, want 1", got)
 	}
 }
+
+func TestTerminalResumeDeadlineRespectsDismissalAndRecheck(t *testing.T) {
+	for _, scenario := range []string{"dismissed during sweep", "due for fresh review"} {
+		t.Run(scenario, func(t *testing.T) {
+			now := time.Now().UTC()
+			at := now.Add(-time.Hour)
+			if scenario == "due for fresh review" {
+				at = now.Add(-decisionRecheckAfter - time.Minute)
+			}
+			e := dismissalEnv(t, &memStore{}, at, true)
+			e.s.todos.todos["task"].Origin = "conv"
+			a := e.s.accept.asks["task"]
+			a.Recommend, a.Options[0].Label = legacyTerminalOption, legacyTerminalOption
+			if scenario == "dismissed during sweep" {
+				e.s.deadlineDefaultHook = func(string) { dismissReview(t, e, at) }
+			}
+			e.s.sweepTaskDeadlines(now)
+			if got := len(e.f.pushed()); got != 0 || !a.DueAt.IsZero() {
+				t.Fatalf("handled a quiet deadline: pushes %d, handled at %v", got, a.DueAt)
+			}
+		})
+	}
+}

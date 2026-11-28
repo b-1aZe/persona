@@ -137,7 +137,7 @@ func (s *Service) sweepTaskDeadlines(now time.Time) {
 	for id, a := range b.asks {
 		// A reversible default may fire at its deadline before the age sweep. A stale irreversible/outward decision,
 		// however, must go back for fresh facts before any reminder reaches the owner.
-		if taskDeadlineDue(a, now) && (a.Reversible || !decisionRecheckDue(a, now)) {
+		if taskDeadlineDue(a, now) && (a.Reversible && !a.manualTerminalRecommendation() || !decisionRecheckDue(a, now)) {
 			due = append(due, id)
 		}
 	}
@@ -208,6 +208,11 @@ func (s *Service) deadlineHandled(ctx context.Context, id string, asked, now tim
 	defer s.reviewDismissals.actions.release(id)
 	if s.supervisorSettlePending(id, now) {
 		return acceptAsk{}, false
+	}
+	if t, ok := s.todoNow(id); ok {
+		if dismissed, err := s.decisionDismissed(ctx, t); err != nil || dismissed {
+			return acceptAsk{}, false
+		}
 	}
 	b := &s.accept
 	b.mu.Lock()

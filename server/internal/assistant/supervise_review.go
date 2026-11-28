@@ -837,7 +837,8 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 		displayMax = maxReworkRounds
 	}
 	text := prompts.RenderSuperviseRework(prompts.SuperviseRework{Round: v.Round, Max: displayMax, Checks: reworkChecks(checks), Note: note})
-	sent, err := s.sendToTask(ctx, t, text)
+	// The task's origin still owns delivery. Attribute an owner-only refusal to the supervisor who tried this rework.
+	sent, err := s.sendToTask(context.WithValue(ctx, reworkReviewerKey{}, self), t, text)
 	if err != nil {
 		return "", fmt.Errorf("recorded rework round %d, but sending it to the agent failed: %v (send it with agent_send)", v.Round, err)
 	}

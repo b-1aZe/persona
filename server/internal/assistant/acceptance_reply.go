@@ -163,6 +163,11 @@ func (s *Service) acceptReply(ctx context.Context, messageID, text string, media
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-feishu_cards.already_handled"))
 		return true
 	}
+	if ask.manualTerminalAnswer(text) {
+		s.reviewDismissals.actions.release(id)
+		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-reports.manual_terminal_resume"))
+		return true
+	}
 	// Feedback starts its work round before delivery, which may wait for an offline Agent to resume.
 	var reopenErr error
 	if t.StartError == "" {

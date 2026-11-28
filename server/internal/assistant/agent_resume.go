@@ -78,7 +78,11 @@ func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c p
 	// it was the user's (or the assistant's own close, which records its cause).
 	oldNode := c.Capabilities == nil && !c.Archived
 	ownerOnlyStop := c.Archived && !cause.AllowsSupervisorResume() || !cause.SupervisorMayResume()
-	s.accept.noteResumeAttempt(resumeAttempt{reviewer: self, agent: SessionRef{MachineID: am.ID, SessionID: c.SessionID}}, oldNode || ownerOnlyStop)
+	reviewer, _ := ctx.Value(reworkReviewerKey{}).(string)
+	if reviewer == "" {
+		reviewer = self
+	}
+	s.accept.noteResumeAttempt(resumeAttempt{reviewer: reviewer, agent: SessionRef{MachineID: am.ID, SessionID: c.SessionID}}, oldNode || ownerOnlyStop)
 	if oldNode {
 		return fmt.Errorf("%s cannot be resumed by the assistant: its computer's node reports no stop cause (too old). "+
 			"The user's Resume on its terminal page can. Nothing was started or sent", agentLabel(c))

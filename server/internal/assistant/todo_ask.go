@@ -176,7 +176,7 @@ func (s *Service) todoAsks(ctx context.Context) map[string]todoAsk {
 			if w.ask.OutsideID == "" {
 				if task, ok := s.todoNow(w.todo); ok {
 					for _, option := range w.ask.Options {
-						if target := decisionTerminal(task, option.Label); target != nil {
+						if target := decisionTerminal(task, option.Label, w.ask.AskedAt); target != nil {
 							a.Terminal, a.TerminalOption = target, option.Label
 							break
 						}

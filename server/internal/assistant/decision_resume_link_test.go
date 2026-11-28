@@ -1,6 +1,7 @@
 package assistant
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nwverse/persona/server/internal/proto"
@@ -83,7 +84,7 @@ func TestDecisionTerminalAfterResumeRefusal(t *testing.T) {
 }
 
 func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
-	for _, scenario := range []string{"other supervisor", "resumable retry", "two refusals", "relinked Agent"} {
+	for _, scenario := range []string{"other supervisor", "resumable retry", "owner resumed", "two refusals", "relinked Agent"} {
 		t.Run(scenario, func(t *testing.T) {
 			s, f, todo := newSupervisedService(t)
 			waitsForReview(t, s, f, todo.ID, "Choose how to proceed.")
@@ -98,6 +99,10 @@ func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
 				t.Fatal("expected the manual-resume refusal")
 			}
 			switch scenario {
+			case "owner resumed":
+				running := boxAgent(ag.SessionID)
+				running.Status = proto.StatusWorking
+				s.SessionsChanged(t.Context(), DeviceSessions{MachineID: ag.MachineID, Sessions: []proto.Session{running}})
 			case "resumable retry":
 				stopped.Capabilities.StopCause = proto.StopUnknown
 				_ = s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil)
@@ -121,5 +126,27 @@ func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
 				t.Fatalf("decision %v", row)
 			}
 		})
+	}
+}
+
+func TestDecisionTerminalAfterDelegatedRework(t *testing.T) {
+	s, f, leader := stoppedTaskLeader(t)
+	s.todos.mu.Lock()
+	s.todos.todos[leader.ID].Origin = "original-conversation"
+	s.todos.mu.Unlock()
+	stopped := stoppedBoxAgent(resumedTaskLeaderSession)
+	stopped.Capabilities.StopCause = proto.StopUser
+	f.setSessions("box", stopped)
+	if _, err := runJSON(t, s, "conv1", "task_review", map[string]any{
+		"todo_id": leader.ID, "verdict": "rework", "note": "finish the missing checks",
+	}); err == nil || !strings.Contains(err.Error(), "user's Resume") {
+		t.Fatalf("expected a manual-resume refusal for this rework, got %v", err)
+	}
+	if _, err := reviewErr(s, leader.ID, rolloutDecision()); err != nil {
+		t.Fatal(err)
+	}
+	row := listedAsk(t, s, leader.ID)
+	if target, _ := row["resume_terminal"].(map[string]any); target["session_id"] != stopped.SessionID {
+		t.Fatalf("rework refusal did not reach the reviewer's decision: %v", row)
 	}
 }
