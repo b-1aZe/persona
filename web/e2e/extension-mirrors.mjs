@@ -129,15 +129,12 @@ try {
     assert.deepEqual(settings.get("m-two"), configured);
     // Real category navigation must retain the configuration target, including the phone's list.
     const categories = page.getByRole("navigation", { name: "Settings categories", exact: true });
-    if (width === 390) {
-      await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
-      await categories.getByRole("button", { name: /^Devices/ }).click();
-      await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
-      await categories.getByRole("button", { name: /^hub/ }).click();
-    } else {
-      await categories.getByRole("button", { name: "Devices", exact: true }).click();
-      await categories.getByRole("button", { name: "hub", exact: true }).click();
-    }
+    if (width === 390) await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
+    await categories.getByRole("button", { name: /^Advanced\b/ }).click();
+    await page.getByRole("region", { name: "Advanced", exact: true }).getByRole("button", { name: /^Devices\b/ }).click();
+    await page.getByRole("button", { name: "Back to Advanced", exact: true }).click();
+    if (width === 390) await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
+    await categories.getByRole("button", { name: /^This hub\b/ }).click();
     await registry.waitFor();
     assert.equal(new URL(page.url()).searchParams.get("manager"), "m-two");
     assert.equal(await page.getByRole("combobox", { name: "Extension manager", exact: true }).inputValue(), "m-two");
