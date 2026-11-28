@@ -7,13 +7,13 @@ import (
 )
 
 // Old decisions can still have a terminal action among the choices. New reviews reject such options.
-func setLegacyResumeOption(s *Service, id string, index int) {
+func setLegacyResumeOption(s *Service, id string, index int, label string) {
 	s.accept.mu.Lock()
 	defer s.accept.mu.Unlock()
 	a := s.accept.asks[id]
-	a.Options[index].Label = legacyTerminalOption
+	a.Options[index].Label = label
 	if index == 0 {
-		a.Recommend = legacyTerminalOption
+		a.Recommend = label
 	}
 }
 
@@ -24,7 +24,7 @@ func TestTerminalResumeTextAnswerKeepsDecisionOpen(t *testing.T) {
 	if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
 		t.Fatal(err)
 	}
-	setLegacyResumeOption(s, todo.ID, 1)
+	setLegacyResumeOption(s, todo.ID, 1, legacyTerminalOption)
 	a := askOf(s, todo.ID)
 	round := a.AskedAt.Format(timeKeyLayout)
 	calls := f.callCount()
@@ -48,25 +48,31 @@ func TestTerminalResumeTextAnswerKeepsDecisionOpen(t *testing.T) {
 	}
 }
 
-func TestTerminalResumeFeishuLetterKeepsDecisionOpen(t *testing.T) {
+func TestTerminalResumeFeishuRepliesKeepDecisionOpen(t *testing.T) {
 	needsLarkLayer(t)
 	s, f, todo, _, notes := conclusionService(t, false)
 	waitsForReview(t, s, f, todo.ID, "Choose the next step.")
 	if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
 		t.Fatal(err)
 	}
-	setLegacyResumeOption(s, todo.ID, 0)
+	// A question mark written into an option is part of its label when the owner repeats it verbatim.
+	const label = legacyTerminalOption + "?"
+	setLegacyResumeOption(s, todo.ID, 0, label)
 	sent := len(sentToAgent(f))
+	beforeSupervisor := sendOnceText(f)
 	a := askOf(s, todo.ID)
-	feishuSay(t, s, f, nil, p2pText("om_resume", "A", "", a.MessageID), "")
-	if got := askOf(s, todo.ID); !got.AcceptedAt.IsZero() || !got.DueAt.IsZero() || len(sentToAgent(f)) != sent {
-		t.Fatalf("letter settled the terminal choice: %+v", got)
-	}
-	if n := notes(); len(n) == 0 || n[len(n)-1] != i18n.T(s.botLang(t.Context()), "assistant-reports.manual_terminal_resume") {
-		t.Fatalf("missing manual-resume explanation: %v", n)
+	for _, msg := range []struct{ id, reply string }{{"om_letter", "A"}, {"om_verbatim", label}} {
+		n := len(notes())
+		feishuSay(t, s, f, nil, p2pText(msg.id, msg.reply, "", a.MessageID), "")
+		if got := askOf(s, todo.ID); !got.AcceptedAt.IsZero() || !got.DueAt.IsZero() || len(sentToAgent(f)) != sent || sendOnceText(f) != beforeSupervisor {
+			t.Fatalf("reply %q forwarded or settled the terminal choice: %+v", msg.reply, got)
+		}
+		if after := notes(); len(after) != n+1 || after[n] != i18n.T(s.botLang(t.Context()), "assistant-reports.manual_terminal_resume") {
+			t.Fatalf("reply %q: missing manual-resume explanation: %v", msg.reply, after)
+		}
 	}
 	// An already delivered choice records the owner's actual words without a second send.
-	if taken, err := s.decisionTold(t.Context(), todo.ID, legacyTerminalOption, "box", "conv1", legacyTerminalOption); err != nil || !taken || len(sentToAgent(f)) != sent {
+	if taken, err := s.decisionTold(t.Context(), todo.ID, label, "box", "conv1", label); err != nil || !taken || len(sentToAgent(f)) != sent {
 		t.Fatalf("already relayed choice: taken %v, error %v", taken, err)
 	}
 }

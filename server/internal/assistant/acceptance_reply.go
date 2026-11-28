@@ -33,7 +33,7 @@ func (s *Service) conclusionQuestion(ctx context.Context, ev *botcard.MessageEve
 	}
 	ask, _ := s.askCopy(id)
 	text := strings.TrimSpace(content.Text)
-	if !ask.Conclusion || text == "" {
+	if !ask.Conclusion || text == "" || ask.manualTerminalAnswer(text) { // acceptReply refuses an exact terminal option, including its punctuation
 		return false
 	}
 	if !strings.ContainsAny(text, "?？") { // i18n-ignore: question marks in the owner's reply, never shown
