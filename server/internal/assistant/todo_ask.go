@@ -181,10 +181,10 @@ func (s *Service) todoAsks(ctx context.Context) map[string]todoAsk {
 							break
 						}
 					}
-					// A new card keeps the manual control out of its choices. The
-					// reason can still direct the owner to the one bound Agent.
-					if a.Terminal == nil && terminalResumeMention(w.ask.Reason) {
-						a.Terminal = soleDecisionAgent(task, w.ask.AskedAt)
+					if ref := w.ask.ResumeTerminal; a.Terminal == nil && ref != nil {
+						if ag, bound := findActiveLinkedAgent(task, ref.MachineID, ref.SessionID); bound && !ag.LinkedAt.After(w.ask.AskedAt) {
+							a.Terminal = ref
+						}
 					}
 				}
 			}
@@ -194,7 +194,7 @@ func (s *Service) todoAsks(ctx context.Context) map[string]todoAsk {
 			a.From, a.Stands, a.Background = w.ask.From, w.ask.Stands, backgroundText(l, loc, &w.ask)
 			a.Suggestion = s.askSuggestion(ctx, w.todo, &w.ask, l)
 			switch {
-			case !w.ask.Deadline.IsZero() && w.ask.Reversible && w.ask.DueAt.IsZero() && a.Recommend != "":
+			case !w.ask.Deadline.IsZero() && w.ask.Reversible && w.ask.DueAt.IsZero() && a.Recommend != "" && !w.ask.manualTerminalRecommendation():
 				d := w.ask.Deadline
 				a.Deadline, a.Default = &d, defaultTaken
 			case w.ask.WhyOwner != "" || !w.ask.Deadline.IsZero():
@@ -284,7 +284,7 @@ func (s *Service) pushDecisionAbout(ctx context.Context, id, reason string) (boo
 	for _, o := range a.Options {
 		n.Todo.Options = append(n.Todo.Options, o.Label)
 	}
-	if d := deadlineText(l, s.location(ctx), a.Deadline, a.Reversible, time.Now()); d != "" && a.AgentReply == nil {
+	if d := a.deadlineText(l, s.location(ctx), time.Now()); d != "" && a.AgentReply == nil {
 		n.Body += "\n" + d
 	}
 	// Self-contained (#3804): where it came from and stands, what each option leads to, what waiting costs.

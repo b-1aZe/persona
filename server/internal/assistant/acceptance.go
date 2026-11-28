@@ -59,6 +59,8 @@ type acceptAsk struct {
 	Outcome    string `json:"outcome,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	Recommend  string `json:"recommend,omitempty"`
+	// ResumeTerminal identifies the Agent whose resume was refused before this decision was raised.
+	ResumeTerminal *SessionRef `json:"resume_terminal,omitempty"`
 	// Deadline: a decision's deadline (#3127, decision_deadline.go); zero: none. Past it unanswered, a Reversible one
 	// takes Recommend by default (ByDefault), one that is not is reminded once and keeps waiting; DueAt is when the
 	// deadline was handled either way.
@@ -148,11 +150,12 @@ func acceptCardDue(a *acceptAsk) bool {
 }
 
 type acceptBook struct {
-	mu      sync.Mutex
-	writing sync.Mutex // serializes outside raises and their caller refs
-	loaded  bool
-	asks    map[string]*acceptAsk       // by todo id
-	outside map[string]*outsideDecision // by outside decision id
+	mu             sync.Mutex
+	writing        sync.Mutex // serializes outside raises and their caller refs
+	loaded         bool
+	asks           map[string]*acceptAsk       // by todo id
+	outside        map[string]*outsideDecision // by outside decision id
+	refusedResumes map[resumeAttempt]time.Time // pending owner-only refusals, until the next decision on the Agent's task
 }
 
 // loadAcceptLocked reads the asks once and reports whether they are in memory; s.accept.mu is held. A failed read

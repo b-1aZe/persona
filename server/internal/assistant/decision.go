@@ -83,27 +83,6 @@ func terminalResumeLabel(label string) bool {
 		strings.Contains(label, "ターミナル") && strings.Contains(label, "再開") // i18n-ignore: matches the terminal-resume instruction as written in zh-Hans / ja, never shown
 }
 
-func terminalResumeMention(text string) bool {
-	text = strings.ToLower(text)
-	return strings.Contains(text, "resume") && strings.Contains(text, "terminal") ||
-		strings.Contains(text, "终端") && strings.Contains(text, "恢复") || // i18n-ignore: matches the terminal-resume instruction as written in zh-Hans / ja, never shown
-		strings.Contains(text, "ターミナル") && strings.Contains(text, "再開") // i18n-ignore: matches the terminal-resume instruction as written in zh-Hans / ja, never shown
-}
-
-func soleDecisionAgent(t Todo, asked time.Time) *SessionRef {
-	var target *SessionRef
-	for _, a := range t.Agents {
-		if !a.active() || a.LinkedAt.After(asked) || a.MachineID == "" || a.SessionID == "" {
-			continue
-		}
-		if target != nil {
-			return nil
-		}
-		target = &SessionRef{MachineID: a.MachineID, SessionID: a.SessionID}
-	}
-	return target
-}
-
 // decisionTerminal returns a task-owned target. An archived/released binding is
 // never used to redirect an owner's recovery action to another Agent.
 func decisionTerminal(t Todo, label string) *SessionRef {

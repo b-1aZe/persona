@@ -76,11 +76,14 @@ func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c p
 	// Every stop but the user's may be resumed (#11528): an unknown cause too, an Agent that quit by itself or that a
 	// restart of its machine cut off. An archived one only with a cause the node recorded as not the user's: archiving
 	// it was the user's (or the assistant's own close, which records its cause).
-	if c.Capabilities == nil && !c.Archived {
+	oldNode := c.Capabilities == nil && !c.Archived
+	ownerOnlyStop := c.Archived && !cause.AllowsSupervisorResume() || !cause.SupervisorMayResume()
+	s.accept.noteResumeAttempt(resumeAttempt{reviewer: self, agent: SessionRef{MachineID: am.ID, SessionID: c.SessionID}}, oldNode || ownerOnlyStop)
+	if oldNode {
 		return fmt.Errorf("%s cannot be resumed by the assistant: its computer's node reports no stop cause (too old). "+
 			"The user's Resume on its terminal page can. Nothing was started or sent", agentLabel(c))
 	}
-	if c.Archived && !cause.AllowsSupervisorResume() || !cause.SupervisorMayResume() {
+	if ownerOnlyStop {
 		return fmt.Errorf("%s cannot be resumed by the assistant: stop cause is %s. %s require "+
 			"the user's Resume on its terminal page. Give that instruction separately from the choices on a decision card. Nothing was started or sent",
 			agentLabel(c), cause, userResumeOnly(c.Archived, cause))

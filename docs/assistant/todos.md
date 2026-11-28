@@ -929,7 +929,7 @@ An internal read-only inspection without a group Inbox source can still close on
 
 ## Decisions the owner can answer
 
-When recovery needs the owner’s terminal Resume, give that instruction in the decision reason. Offer choices the supervisor can carry out. The web card opens the linked Agent terminal, where the owner explicitly resumes the session.
+When recovery needs the owner’s terminal Resume, give that instruction in the decision reason. Offer choices the supervisor can carry out. When the hub refuses a supervisor’s resume, that supervisor’s next decision on the task can link the affected Agent’s terminal. The web card opens it for the owner to resume the session. Mentioning a terminal in the reason does not create a link.
 
 (#3804, `assistant/decision.go`.) A supervised task reviewed `needs_user` used to reach the owner as a title and "waiting for your decision", often for a task they had not started themselves. Now only a decision reaches them, it stands on its own, and it never rots.
 

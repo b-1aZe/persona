@@ -711,6 +711,7 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 			return "The owner already replied in the Agent conversation. The reply was handed to you for review and no card was sent. Verify the result or clarify the question.", nil
 		}
 		conclusion.Outcome, conclusion.Reason, conclusion.Recommend, conclusion.Decision = outcomeDecide, decision.Reason, decision.Recommend, decision
+		conclusion.Reviewer = self
 		conclusion.Check = scheduledCheckOf(ctx) // raised by a recurring check (escalateScheduledTodo), never by a model's call
 		reversible := false
 		switch {

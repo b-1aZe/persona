@@ -335,6 +335,10 @@ func (s *Service) acceptTryAsDismissalLocked(ctx context.Context, id, card strin
 		b.mu.Unlock()
 		return s.answerOutside(ctx, id, asked, outsideAnswer{Option: recommend}, byDefault)
 	}
+	if a.manualTerminalRecommendation() {
+		b.mu.Unlock()
+		return acceptResult{}, i18n.Err("assistant-reports.manual_terminal_resume")
+	}
 	if ownerCheck && !resumeOwnerPass {
 		if work := s.unconfirmedTaskClose(ctx, t); work != nil {
 			b.mu.Unlock()
@@ -353,10 +357,6 @@ func (s *Service) acceptTryAsDismissalLocked(ctx context.Context, id, card strin
 			b.mu.Unlock()
 			return acceptResult{}, err
 		}
-	}
-	if decideAsk(a) && terminalResumeLabel(a.Recommend) {
-		b.mu.Unlock()
-		return acceptResult{}, i18n.Err("assistant-reports.manual_terminal_resume")
 	}
 	previousDueAt, previousAcceptedAt := a.DueAt, a.AcceptedAt
 	if a.AcceptedAt.IsZero() {
