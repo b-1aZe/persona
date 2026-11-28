@@ -64,7 +64,7 @@ struct SettingsView: View {
             .accessibilityIdentifier("settings-list")
             .themedPage()
             .pageSearchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: String(localized: "Search Settings"))
-            .onChange(of: search) { searchResults = SettingsCatalog.search(search) }
+            .onChange(of: search) { searchResults = SettingsCatalog.search(search, for: model) }
             .onChange(of: model.assistantManagerID) {
                 model.settingsPath = NavigationPath()
                 plugins = nil
@@ -223,7 +223,7 @@ struct SettingsView: View {
         let d = UserDefaults.standard
         if let value = d.string(forKey: "openAppearance"), value.hasPrefix("search:") {
             search = String(value.dropFirst("search:".count))
-            searchResults = SettingsCatalog.search(search)
+            searchResults = SettingsCatalog.search(search, for: model)
             Self.debugOpened = true
             return
         }
@@ -306,6 +306,7 @@ struct SettingsView: View {
             if let id = d.string(forKey: "openMessagesChat") { p.append(MessagesThreadRoute(id: id, name: "")) }
         }
         else if d.bool(forKey: "openConnectorBot") { p.append(SettingsPage.feishuBot) }
+        else if d.bool(forKey: "showGroupAccess") { p.append(SettingsPage.feishuBot) } // Lark Bot, at Group Access (#16848)
         else if d.bool(forKey: "openConnectorDevice") { p.append(SettingsPage.phoneData) }
         else if d.bool(forKey: "openIPhoneSetup") { p = SettingsPage.iphoneSetupPath } // the guided setup (#8199)
         else if d.bool(forKey: "openTranslationSettings") { p.append(SettingsPage.translation) }
