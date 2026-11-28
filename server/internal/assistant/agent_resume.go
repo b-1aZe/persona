@@ -60,7 +60,7 @@ func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c p
 	// can offer its terminal in a later decision. Register before the archive lookup so a live update wins.
 	ownerOnly := false
 	if reviewer != "" && s.ensureTodosLoaded(ctx) == nil {
-		if attempt, evidence := s.todos.beginResumeAttempt(reviewer, am.ID, c); evidence != nil {
+		if attempt, evidence := s.todos.beginResumeAttempt(self, reviewer, am.ID, c); evidence != nil {
 			defer func() { s.todos.finishResumeAttempt(attempt, evidence, ownerOnly) }()
 		}
 	}

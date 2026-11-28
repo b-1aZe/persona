@@ -22,12 +22,12 @@ type resumeEvidence struct {
 	ownerOnly bool
 }
 
-func (b *todoBook) beginResumeAttempt(reviewer, machine string, c proto.Session) (resumeAttempt, *resumeEvidence) {
+func (b *todoBook) beginResumeAttempt(sender, reviewer, machine string, c proto.Session) (resumeAttempt, *resumeEvidence) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	id := b.activeBySession[[2]string{machine, c.SessionID}]
 	t := b.todos[id]
-	if t == nil || t.DoneAt != nil || othersTask(c, *t, reviewer) != nil {
+	if t == nil || t.DoneAt != nil || othersTask(c, *t, sender) != nil {
 		return resumeAttempt{}, nil
 	}
 	now := time.Now().UTC()

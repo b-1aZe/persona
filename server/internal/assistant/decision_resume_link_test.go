@@ -155,6 +155,8 @@ func TestDecisionTerminalAfterDelegatedRework(t *testing.T) {
 	s, f, leader := stoppedTaskLeader(t)
 	s.todos.mu.Lock()
 	s.todos.todos[leader.ID].Origin = "original-conversation"
+	// With no assigned supervisor, the current main reviews this task on behalf of its original conversation.
+	s.todos.todos[leader.ID].Supervision.Supervisor = ""
 	s.todos.mu.Unlock()
 	stopped := stoppedBoxAgent(resumedTaskLeaderSession)
 	stopped.Capabilities.StopCause = proto.StopUser
