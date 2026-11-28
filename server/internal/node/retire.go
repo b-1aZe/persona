@@ -81,6 +81,14 @@ func (n *Node) retire(ctx context.Context, id string, closeTerminal, afterExit b
 	if err := n.resolveStopRuntime(ctx, id); err != nil {
 		return false, err
 	}
+	if !guard.Active {
+		if h, ok := n.runtimeCloseTarget(id); ok {
+			if _, err := n.runtimeClose(ctx, h, id); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+	}
 	unlock, _, ok, err := n.stoppable(id, true)
 	if err != nil {
 		return false, err
@@ -105,6 +113,55 @@ func (n *Node) retire(ctx context.Context, id string, closeTerminal, afterExit b
 		cause = proto.StopUser
 	}
 	if err := n.closeWithCause(ctx, id, cause); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// runtimeCanClose is a runtime row the owner's close-on-end setting may release: it runs outside a terminal, is not
+// an assistant conversation, and explicitly advertises close.
+func runtimeCanClose(row proto.Session) bool {
+	return row.SourceKind == proto.SourceRuntime && !row.Assistant && row.PaneID == "" &&
+		row.Capabilities != nil && !row.Capabilities.Terminal &&
+		row.Capabilities.Close != nil && *row.Capabilities.Close
+}
+
+// runtimeCloseTarget returns the runtime that owns id when its listed row is closeable and still, without treating a
+// runtime's row as a terminal session. A row that is working, blocked, unknown, or starting keeps the refusal a terminal
+// retire would give it.
+func (n *Node) runtimeCloseTarget(id string) (*runtimeConn, bool) {
+	h, _, _ := n.runtimes.belongs(id)
+	if h == nil {
+		return nil, false
+	}
+	row, ok := h.row(id)
+	if !ok || !runtimeCanClose(row) || n.isAssistantSession(id) || n.runtimeAssistant(id) {
+		return h, false
+	}
+	switch row.Status {
+	case proto.StatusIdle, proto.StatusDone:
+	default:
+		return h, false
+	}
+	if row.Starting {
+		return h, false
+	}
+	return h, true
+}
+
+// runtimeClose uses the runtime's own close for a live, terminal-less runtime session. The runtime's close is the
+// existing session.close path, including its capability check and gate release; retire reports it as closed only when
+// that call succeeds.
+func (n *Node) runtimeClose(ctx context.Context, h *runtimeConn, id string) (bool, error) {
+	params, err := json.Marshal(map[string]any{"session_id": id})
+	if err != nil {
+		return false, err
+	}
+	_, err, handled := n.runtimeHandle(ctx, h, "session.close", params)
+	if !handled {
+		return false, refusal(notRetirable, "this runtime session has no close", nil)
+	}
+	if err != nil {
 		return false, err
 	}
 	return true, nil
@@ -921,7 +978,7 @@ func (n *Node) newTab(ctx context.Context, launch host.Launcher, cwd, ws, tabNam
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("创建终端标签页失败：%w", err)
+		return nil, hostFailure(ctx, "terminal_open_failed", err)
 	}
 	n.forgetPane(created.Pane.String()) // a new tab: whatever ran in a pane of its id before, nothing runs in it yet
 	ts.opened(created.SpaceID)

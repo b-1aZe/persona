@@ -22,6 +22,7 @@ const (
 	sigNeedsYou      = "needs_you"      // an agent waits for an answer
 	sigTimedOut      = "timed_out"      // terminal agents stopped after unattended lack of progress
 	sigStalled       = "stalled"        // working, but nothing moved for long
+	sigLoopNoop      = "loop_noop"      // repeated no-change results from an Agent native schedule
 	sigNoProgress    = "no_progress"    // working, its session moves, but only waits and repeats: no real progress (supervise_progress.go)
 	sigAllStopped    = "all_stopped"    // every current participant stopped with nothing scheduled to resume it
 	sigInterrupted   = "interrupted"    // the model service cut its turn off
@@ -45,7 +46,10 @@ const (
 	// answered the decision it raised (checkDecided), which did not go to the Agent.
 	sigCheck = "check"
 	// sigTodoReady: an open, unstarted dependent to-do has all of its after prerequisites satisfied (todo_after_ready.go, #12606).
-	sigTodoReady = "todo_ready"
+	sigTodoReady         = "todo_ready"
+	sigBlockersUnblocked = "blockers_unblocked" // the last persistent blocker on an open to-do cleared
+	sigMergeTrainTurn    = "mergetrain_turn"    // a PR advanced to the head of its repository's merge train
+	sigWriteConflict     = "write_conflict"     // two dispatched tasks declared overlapping write scopes
 	// sigPRMerged: an unparked open supervised task's delivery PR merged with no other delivery PR open (pr_merge_wake.go, #13100).
 	sigPRMerged = "pr_merged"
 	// sigParentCloseout: an open parent to-do with no active Agent has all part_of children done (todo_parent_closeout.go, #13100).
@@ -96,8 +100,11 @@ type superviseSignal struct {
 	// PendingPredecessors: keys of earlier stretches of this id replaced before their delivery or queue acknowledgment.
 	// An ACK removes exactly its own Key; a still-present predecessor's dedup reservation is not delivery proof.
 	PendingPredecessors []string
-	PRURL               string // the followed PR, revalidated before delivery
-	PREventID           string `json:"pr_event_id,omitempty"` // names a review or comment, including during owner decisions
+	PRURL               string              // the followed PR, revalidated before delivery
+	PREventID           string              `json:"pr_event_id,omitempty"` // names a review or comment, including during owner decisions
+	BlockerPRs          []string            `json:"blocker_prs,omitempty"`
+	MergeTrainTurn      *mergeTrainTurnWake `json:"merge_train_turn,omitempty"`
+	WriteConflict       *writeConflictWake  `json:"write_conflict,omitempty"`
 	// Unreachable: this decision exists because its assigned task leader Agent or Assistant supervisor could not be
 	// reached, not because the worker waits for the user. It stays a decision even when the worker is not needs_user.
 	// Recipient distinguishes an unreachable Assistant supervisor from the existing task-leader-Agent escalation.
@@ -142,6 +149,8 @@ type superviseSignal struct {
 	Told bool
 	// Inbox: the Inbox item an inbox signal names, and how many new messages it tells (supervise_inbox.go).
 	Inbox *prompts.SuperviseInbox
+	// Thread guards a linked-topic notification if the task is rebound while its digest waits.
+	Thread *TodoThread
 	// Optional routine batching keeps these in memory only, after routing and before delivery. They are never part of
 	// a persisted relay payload: once admitted, the existing queue owns delivery.
 	batchTo    string
@@ -228,6 +237,12 @@ func (g superviseSignal) prConflictURL() string {
 // id names what a newer signal replaces while it waits: the task's signal of that kind (a report: of that kind of
 // report, so a progress report does not push out a question).
 func (g superviseSignal) id() string {
+	if g.Kind == sigMergeTrainTurn && g.MergeTrainTurn != nil {
+		return g.Todo + "|" + g.Kind + "@" + g.MergeTrainTurn.RepoKey
+	}
+	if g.Kind == sigWriteConflict && g.WriteConflict != nil {
+		return g.Todo + "|" + g.Kind + "@" + g.WriteConflict.PeerTodo
+	}
 	if g.Kind == sigDraftPR {
 		return g.Todo + "|" + g.Kind + "@" + g.PRURL
 	}
@@ -266,6 +281,14 @@ func (g superviseSignal) id() string {
 	return g.Todo + "|" + g.Kind
 }
 
+func (g superviseSignal) todoV2Wake() bool {
+	switch g.Kind {
+	case sigBlockersUnblocked, sigMergeTrainTurn, sigWriteConflict:
+		return true
+	}
+	return false
+}
+
 // urgent: a signal that waits on a decision goes out sooner than the rest.
 func (g superviseSignal) urgent() bool {
 	switch g.Kind {
@@ -276,17 +299,17 @@ func (g superviseSignal) urgent() bool {
 		return !g.JudgeDown
 	case sigNeedsYou, sigIdle, sigAllStopped, sigFailed, sigInterrupted, sigStarted, sigPRConflict, sigDraftPR, sigPREvent, sigEscalated, sigAsk, sigOrphaned, sigRecovered, sigDecide, // started: the user waits to hear it
 		sigRecheck, sigUndecidable, sigDeliveryHold, sigOwnerCannot, sigEstimateDue, sigTimedOut, // the owner, an automatic deadline or a stopped task waits
-		sigParkedDue, sigParkDecided, sigDecisionReply, sigHandoffResult, sigCardlessWait, sigTodoReady, sigPRMerged, sigParentCloseout, sigNeedsUserExternalInfo, sigOutageRecovery, sigOwnerPresent:
+		sigParkedDue, sigParkDecided, sigDecisionReply, sigHandoffResult, sigCardlessWait, sigTodoReady, sigPRMerged, sigParentCloseout, sigNeedsUserExternalInfo, sigOutageRecovery, sigOwnerPresent, sigTopicFollowup:
 		return true
 	case sigReport:
 		return g.Report != upReportProgress
 	case sigCheck: // the owner answered: what they chose is acted on soon
 		return g.Report == checkDecidedReport
 	}
-	return false
+	return g.todoV2Wake()
 }
 
-// immediate signals need a decision and wait only for gathering, never the shared spacing or routine cooldown.
+// immediate signals bypass shared spacing and routine cooldown.
 // An explicit NotBefore (a deferred failed-start batch) still applies.
 func (g superviseSignal) immediate() bool { return supervisionBatchImmediate(g) }
 
@@ -307,6 +330,7 @@ type superviseBook struct {
 	pendingLoadMu       sync.Mutex                   // one durable pending restoration at a time
 	pendingLoaded       bool                         // the durable pending has been merged into pending
 	sent                map[string]string            // todo|kind → the key last told
+	taken               map[string]string            // todo|kind → the key a running digest took and has not marked sent yet (#17838)
 	asks                map[string]string            // todo → what its agent last asked (InteractionRaised)
 	last                time.Time                    // when the last supervision message went out
 	queued              map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
@@ -355,6 +379,20 @@ func (b *superviseBook) init() {
 	}
 	if b.batch == nil {
 		b.batch = map[string]time.Time{}
+	}
+	if b.taken == nil {
+		b.taken = map[string]string{}
+	}
+}
+
+// forgetToldLocked lets key of g be told again: it is no longer the key last told (sent) nor the one a running digest
+// holds (taken). For a handover that tells the same key to its new supervisor on purpose. s.supervise.mu is held.
+func (b *superviseBook) forgetToldLocked(g superviseSignal) {
+	if b.sent[g.id()] == g.Key {
+		delete(b.sent, g.id())
+	}
+	if b.taken[g.id()] == g.Key {
+		delete(b.taken, g.id())
 	}
 }
 
@@ -930,12 +968,19 @@ func (s *Service) superviseTimings() superviseTimings {
 	return p
 }
 
-// digestWait is how long until the pending signals are due (false: none): each waits p.gather after it came, and
+func superviseGatherAt(g superviseSignal, gather time.Duration) time.Time {
+	if g.Kind == sigIdle && g.Handoff {
+		return g.At
+	}
+	return g.At.Add(gather)
+}
+
+// digestWait is how long until the pending signals are due (false: none): most wait p.gather after they came, and
 // p.every (p.urgent for an urgent one) after the last message (last; zero: none yet), except an immediate one.
 func digestWait(now, last time.Time, pending []superviseSignal, p superviseTimings) (time.Duration, bool) {
 	var due time.Time
 	for _, g := range pending {
-		at := g.At.Add(p.gather)
+		at := superviseGatherAt(g, p.gather)
 		if g.NotBefore.After(at) {
 			at = g.NotBefore
 		}
@@ -1058,9 +1103,9 @@ func (s *Service) queueSignalReplacing(old *superviseSignal, g superviseSignal) 
 	// Source-backed events need a durable receipt. Their fingerprints deduplicate delivery even
 	// after the digest has dequeued the signal and the source retries its cursor write.
 	sourceBacked := g.Kind == sigInbox && g.Inbox != nil && g.Inbox.ToAgent == "unhandled" || g.PREventID != ""
-	if b.sent[g.id()] == g.Key && !sourceBacked && g.Key != "" {
+	if (b.sent[g.id()] == g.Key || b.taken[g.id()] == g.Key) && !sourceBacked && g.Key != "" {
 		b.mu.Unlock()
-		return false
+		return false // told, or being told by the digest that took it (#17838)
 	}
 	var absorbedIDs []string
 	if cur, ok := b.pending[g.id()]; ok {
@@ -1446,9 +1491,6 @@ func (s *Service) superviseWatch(ctx context.Context, now time.Time) {
 				}
 			}
 		}
-		if todosV2 {
-			s.refreshTodoRuntimeChangedFiles(ctx, t, agents)
-		}
 		if todosV2 && ((t.Check != nil && t.Check.Verdict == verdictDone) || (t.Supervision != nil && t.Supervision.Progress != nil && t.Supervision.Progress.Kind == "done")) {
 			if err := s.ResetSupervisedTaskRecovery(ctx, t.ID); err != nil {
 				s.logf("todos_v2 restart recovery reset %s: %v", t.ID, err)
@@ -1518,7 +1560,8 @@ func (s *Service) superviseWatch(ctx context.Context, now time.Time) {
 		if g, ok := s.deliveryHoldSignal(ctx, t, now); ok { // an owner hold with no card goes to its supervisor first
 			s.signal(g)
 		}
-		s.briefClock(ctx, t, now)   // past its brief's clock with no end (task_brief_scope.go)
+		s.briefClock(ctx, t, now) // past its brief's clock with no end (task_brief_scope.go)
+		s.signalNativeLoopNoop(ctx, t)
 		s.watchTurn(ctx, t, agents) // a turn that ended with no working heard, or was left half handled (task_turns.go)
 	}
 	if s.expireSupervisionHolds(ctx, now) {
@@ -1527,11 +1570,7 @@ func (s *Service) superviseWatch(ctx context.Context, now time.Time) {
 	if s.todosLoaded() {
 		s.pruneHandledStalls(ctx, openIDs)
 	}
-	if todosV2 {
-		if _, err := s.ReconcileTodoBlockers(ctx, ""); err != nil {
-			s.logf("todos_v2 blocker reconcile sweep: %v", err)
-		}
-	}
+	s.queueTodoBlockerSweep(ctx, now)
 }
 
 // SetSuperviseTimings makes supervision messages gather for gather and come at most every every (urgent: urgent), and

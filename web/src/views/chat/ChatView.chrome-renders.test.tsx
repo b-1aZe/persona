@@ -94,7 +94,7 @@ const waitForUpdateNotice = (label: string) => vi.waitFor(async () => {
 let host: HTMLDivElement;
 let root: Root;
 let opened = "";
-let fetcher: ReturnType<typeof vi.fn>;
+let fetcher: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>>;
 // An agent's header loads its compare menu lazily (ChatView: import("../../lib/compare-runs")) and finished replies
 // load their bar lazily (MessageActions: import("./ReplyBar")), each drawing again when it arrives. Loaded here first,
 // neither arrives mid-test under a full parallel run and counts as a render caused by pushes or turn transitions.

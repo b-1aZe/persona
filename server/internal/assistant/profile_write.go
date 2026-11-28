@@ -75,7 +75,7 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 		in.TodosV2AutoSeen != "" || in.TodosV2PendingReviewSLAHours != nil ||
 		in.TodosV2CanWaitSLAHours != nil || in.TodosV2FoldChildren != nil ||
 		in.TodosV2QuietHoursPatch != nil || in.TodosV2DigestWindowMinutes != nil ||
-		in.IntegrationsV2 != nil) && !s.explicitSettingsTarget(w, r) {
+		in.IntegrationsV2 != nil || in.MemoryExtensionStandingBytes != nil) && !s.explicitSettingsTarget(w, r) {
 		return
 	}
 	if in.Readonly != nil {
@@ -224,6 +224,10 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, http.StatusBadRequest, errors.New("todos_v2_can_wait_sla_hours must be 0, 24, 48 or 72"))
 		return
 	}
+	if b := in.MemoryExtensionStandingBytes; b != nil && !slices.Contains(memoryExtensionStandingOptions, *b) {
+		apierr.Write(w, http.StatusBadRequest, errors.New(memoryExtensionStandingBytesInvalid))
+		return
+	}
 	var todosV2QuietHours string
 	if in.TodosV2QuietHoursPatch != nil {
 		var qh *string
@@ -317,7 +321,9 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 	errTodosV2Changed := errors.New("todos_v2 setting changed")
 	errIntegrationsV2Changed := errors.New("integrations_v2 setting changed")
 	var labsSeenChanged bool
+	var beforeTodoPrefs todoRevisionPrefs
 	saved, err := s.updateSettings(ctx, func(v *Settings) error {
+		beforeTodoPrefs = todoRevisionPrefsOf(*v)
 		var err error
 		if labsSeenChanged, err = applyLabsSeen(v, labsSeen); err != nil {
 			return err
@@ -464,6 +470,9 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 		if in.IntegrationsV2 != nil {
 			v.IntegrationsV2 = in.IntegrationsV2
 		}
+		if in.MemoryExtensionStandingBytes != nil {
+			v.MemoryExtensionStandingBytes = in.MemoryExtensionStandingBytes
+		}
 		if in.RecentTaskChats != nil {
 			v.RecentTaskChats = in.RecentTaskChats
 		}
@@ -556,6 +565,9 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 		if in.SupervisionBatchMinutes != nil {
 			v.SupervisionBatchMinutes = in.SupervisionBatchMinutes
 		}
+		if in.SupervisionTriage != nil {
+			v.SupervisionTriage = in.SupervisionTriage
+		}
 		if in.AutoSupervisionMode != "" {
 			// The mode wins over the older switch in the same body, and keeps it in step for older readers.
 			on := in.AutoSupervisionMode != supervisionModeOff
@@ -605,6 +617,9 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 	if guideChanged {
 		s.mcpChanges.notify()
 	}
+	if todoRevisionPrefsOf(saved) != beforeTodoPrefs {
+		s.todoRevisionChanged()
+	}
 	s.settingsChanged(ctx)
 	// Revoke already captured requests as part of a policy edit. Forwarding stays
 	// available; only a subsequent genuine request can rearm the snapshot.
@@ -617,13 +632,6 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.SupervisionBatchMinutes != nil && supervisionBatchMinutesOf(s.settings(ctx)) != supervisionBatchMinutesOf(before) {
 		s.rescheduleSupervision()
-	}
-	afterTodosV2 := s.settings(ctx)
-	if (in.TodosV2 != nil && afterTodosV2.todosV2On() != before.todosV2On()) ||
-		(afterTodosV2.todosV2On() && (afterTodosV2.todosV2PendingReviewSLAHours() != before.todosV2PendingReviewSLAHours() ||
-			afterTodosV2.todosV2CanWaitSLAHours() != before.todosV2CanWaitSLAHours() ||
-			afterTodosV2.todosV2FoldChildrenOn() != before.todosV2FoldChildrenOn())) {
-		s.todosPushSoon()
 	}
 	if in.MeetingTranscriptionExtension != nil {
 		s.transcriptionReadinessChanged() // named again: probed again (the answer stands meanwhile)

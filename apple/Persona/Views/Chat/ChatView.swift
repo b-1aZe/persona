@@ -26,6 +26,9 @@ struct ChatView: View {
     /// The session on screen; the sibling strip can switch it to another agent in the same space.
     @State private var key: SessionKey
     var style: ChatStyle = .dev
+    @StoredValue(BotmuxDisplayMode.storageKey) private var botmuxMode: BotmuxDisplayMode = .decoded
+
+    private var isBotmuxSession: Bool { session?.host == "botmux" || session?.hostKind == "botmux" }
     @State private var position = ScrollPosition(edge: .top) // .top is the newest end of the flipped list
     /// Where the chat stands with its newest end: ↓, following and holding back all come from it (#1046). Changed
     /// through `setFollow` only.
@@ -921,7 +924,8 @@ struct ChatView: View {
                                        supervision: openSupervision, active: shownRoundActive, background: foldsBackground,
                                        foldRoutineRelayReplies: foldRoutineRelayReplies, latestReplyNeedsAttention: latestReplyNeedsAttention,
                                        closeout: shownCloseout != nil, children: childStamp, modes: modes.map { "\($0.kind)@\($0.at.timeIntervalSince1970)" },
-                                       turnChanges: showsTurnChanges, cwd: showsTurnChanges ? (session?.cwd ?? "") : "")
+                                       turnChanges: showsTurnChanges, cwd: showsTurnChanges ? (session?.cwd ?? "") : "",
+                                       botmuxMode: botmuxMode, botmuxSession: isBotmuxSession)
         if scratch.linesKey == key { return scratch.lines }
         var blocks = store.blocks
         if frozen != nil {
@@ -1023,7 +1027,8 @@ struct ChatView: View {
     /// What builds the lines from the blocks, with what is open now.
     private var lineBuilder: ChatLines {
         ChatLines(openWork: openWork, openAll: Self.debugOpenAll, openRuns: openRuns,
-                  openAllRuns: Self.debugOpenRuns, chipRuns: AppStyle.current.usesBeautifulUI,
+                  openAllRuns: Self.debugOpenRuns, botmuxMode: botmuxMode, botmuxSession: isBotmuxSession,
+                  chipRuns: AppStyle.current.usesBeautifulUI,
                   foldsIntoRun: foldsIntoRun, includeTurnChanges: showsTurnChanges,
                   turnChangesCwd: showsTurnChanges ? session?.cwd : nil,
                   foldSupervision: style == .assistant, foldBackground: foldsBackground,
@@ -1573,6 +1578,7 @@ struct ChatView: View {
             SentPhotos(images: items.compactMap(\.image)).padding(.bottom, -8)
         case .work(let id, let items, let live, let start, let end):
             WorkLine(items: items, live: live, start: start, end: end, open: isOpen(id, live: live), agents: live ? agentsWorking : nil,
+                     compaction: live ? model.liveCompaction(key) : nil,
                      accepting: live && items.isEmpty && sendPhase == .processing && !status.isActive,
                      openTerminal: live && style == .dev && session?.canTerminal == true ? { openTerminal() } : nil) {
                 toggleWork(id, fromHeader: true)
@@ -3159,7 +3165,7 @@ struct ChatView: View {
             // Streamed text, the typing line and unsent messages sit at the newest end too: while you read
             // history they wait with the rest, as they were drawn then (`Frozen`).
             if drawsLive, !ChatLines.hidesLiveSupervision(lines, open: openSupervision, openAll: Self.debugOpenSupervision) {
-                ChatLiveText(store: store, held: frozen?.text)
+                ChatLiveText(store: store, held: frozen?.text, hidesBotmuxSentinel: isBotmuxSession && botmuxMode == .decoded)
             }
             // Sent, and the agent not on it yet: the line the new-conversation page showed under the first message
             // (`FirstMessagePending`), where the turn's work line comes in. Without it the chat that took over showed
@@ -3798,6 +3804,7 @@ struct ChatView: View {
     }
 
     @ViewBuilder private var moreMenuItems: some View {
+        if isBotmuxSession { BotmuxModePicker(mode: $botmuxMode) }
         #if os(iOS)
         if style == .dev, let host { hostedMenuItems(host) }
         if style == .dev, let session {
@@ -5470,7 +5477,9 @@ struct ChatView: View {
 
     /// A user's line: a bubble, or what stands for it (a message from a source, one Persona injected, a loop's tick, a peer's).
     @ViewBuilder private func userRow(_ i: Item, showsSource: Bool, hidesPrompt: Bool) -> some View {
-        if let source = MessageSource.of(i) {
+        if botmuxMode == .decoded, i.botmux?.isInbound == true {
+            BotmuxMessagesView(item: i).equatable()
+        } else if let source = MessageSource.of(i) {
             SourceMessage(item: i, source: source, showsSource: showsSource, hidesPrompt: hidesPrompt).equatable()
         } else if let n = Injected.of(i) {
             // Persona's message for the model: one line in its place, never its words (docs/protocol/protocol.md「Messages injected by Persona」).
@@ -5490,7 +5499,11 @@ struct ChatView: View {
         case .user(let i): userRow(i, showsSource: showsSource, hidesPrompt: hidesPrompt).chatMark("chat.user." + i.id)
         case .assistant(let i):
             VStack(alignment: .leading, spacing: 0) {
-                AssistantText(item: i).equatable().chatMark("chat.answer." + i.id)
+                if botmuxMode == .decoded, i.botmux?.kind == "reply" {
+                    BotmuxMessagesView(item: i).equatable().chatMark("chat.answer." + i.id)
+                } else {
+                    AssistantText(item: i).equatable().chatMark("chat.answer." + i.id)
+                }
                 ReplyUsageFooter(item: i)
             }
         case .thinking(let i):
@@ -6550,10 +6563,16 @@ struct Composer: View, Equatable {
         .onChange(of: focused) { _, f in onFocus?(f) }
         .onDisappear { if focused { onFocus?(false) } } // gone with the keyboard (a subagent opened, another pane)
         .modifier(CompactionTracking(key: key))
-        .onChange(of: model.composerFocus) { _, k in
-            guard k == key else { return }
-            model.composerFocus = nil
-            focused = true
+        // A quote (#1058) or Message Persona (#17789) asks for the keyboard. Taken once this chat is in front and the app
+        // is active: from a cold launch the field may be laid out before it can be first responder, so it tries briefly.
+        .tabActiveTask(id: model.composerFocus == key) {
+            guard model.composerFocus == key else { return }
+            for _ in 0..<10 {
+                focused = true
+                try? await Task.sleep(for: .milliseconds(150))
+                if focused || Task.isCancelled { break }
+            }
+            if model.composerFocus == key { model.composerFocus = nil }
         }
         #if DEBUG
         .task { // `-showClearConfirm YES`: the /clear confirmation, for screenshots
@@ -8180,6 +8199,7 @@ struct WorkLine: View, Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.isEmpty == b.isEmpty && a.counts == b.counts && a.live == b.live && a.accepting == b.accepting && a.start == b.start && a.end == b.end
             && a.open == b.open && (a.openTerminal == nil) == (b.openTerminal == nil) && a.agents == b.agents && a.doing == b.doing
+            && a.compaction == b.compaction
     }
 
     private let isEmpty: Bool
@@ -8194,12 +8214,15 @@ struct WorkLine: View, Equatable {
     /// Otherwise, while it runs, the step it names instead of its counts (#2987); drawn as `shown`, which follows it at
     /// most about twice a second.
     private let doing: WorkNow?
+    /// Persona's plugin says the main loop is compacting: the running line says so for as long as the same push lasts.
+    private let compaction: SessionLiveCompactionPresentation?
     @State private var shown: WorkNow?
     @State private var shownAt = Date.distantPast
     let openTerminal: (() -> Void)?
     let toggle: () -> Void
 
     init(items: [WorkItem], live: Bool, start: Date?, end: Date?, open: Bool, agents: AgentsWorking? = nil,
+         compaction: SessionLiveCompactionPresentation? = nil,
          accepting: Bool = false, openTerminal: (() -> Void)?, toggle: @escaping () -> Void) {
         isEmpty = items.isEmpty
         counts = WorkSummary(items)
@@ -8209,6 +8232,7 @@ struct WorkLine: View, Equatable {
         self.end = end
         self.open = open
         self.agents = live ? agents : nil
+        self.compaction = live ? compaction : nil
         doing = live && self.agents == nil ? WorkNow.of(items) : nil
         _shown = State(initialValue: doing)
         self.openTerminal = openTerminal
@@ -8309,7 +8333,20 @@ struct WorkLine: View, Equatable {
     }
 
     @ViewBuilder private func summary(now: Date) -> some View {
-        if let step { stepSummary(step, now: now) } else { counted(now: now) }
+        if let compaction { compactionSummary(compaction) } else if let step { stepSummary(step, now: now) } else { counted(now: now) }
+    }
+
+    /// The same words as the web for this push, with the elapsed time the node sent.
+    private func compactionSummary(_ compaction: SessionLiveCompactionPresentation) -> some View {
+        HStack(spacing: Theme.Space.flush) {
+            Text(Self.compactionWords).truncationMode(.tail)
+            let took = compaction.compactDuration
+            if !took.isEmpty {
+                Text(took).fixedSize()
+            }
+        }
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
     }
 
     /// One line: the step's words give way (a path or a command in the middle, a sentence at the end), "+2" and the
@@ -8334,6 +8371,11 @@ struct WorkLine: View, Equatable {
 
     private func label(now: Date, short: Bool) -> String {
         if accepting { return String(localized: "Processing…") }
+        if let compaction {
+            let took = compaction.compactDuration
+            let words = Self.compactionWords
+            return took.isEmpty ? words : "\(words) · \(took)"
+        }
         // The step in full: the line may have cut it.
         if let step { return step.text + step.trailer(took: Self.duration(from: start, to: now)) }
         let parts = agents.map { [SubagentGridText.working(count: $0.count, doing: $0.doing, short: short)] } ?? (short ? counts.short : counts.full)
@@ -8352,10 +8394,23 @@ struct WorkLine: View, Equatable {
 
     static func duration(from start: Date?, to end: Date) -> String {
         guard let start else { return "" }
-        let s = max(0, Int(end.timeIntervalSince(start)))
+        return duration(seconds: max(0, Int(end.timeIntervalSince(start))))
+    }
+
+    static func duration(seconds s: Int) -> String {
         if s < 60 { return String(localized: "\(s) s") }
         if s < 3600 { return s % 60 == 0 ? String(localized: "\(s / 60) min [Chat View a38788]") : String(localized: "\(s / 60)m \(s % 60)s") }
         return String(localized: "\(s / 3600) hr \(s % 3600 / 60) min")
+    }
+
+    /// The web's running-status words verbatim, within each interface language.
+    private static var compactionWords: String { String(localized: "Compacting context…") }
+}
+
+private extension SessionLiveCompactionPresentation {
+    var compactDuration: String {
+        guard let elapsedS else { return "" }
+        return WorkLine.duration(seconds: max(0, elapsedS))
     }
 }
 
@@ -8433,6 +8488,7 @@ private struct ChatLiveText: View {
     /// in a branch of its own beside this one (both rows `live`), the frozen words never showed, this view stayed in
     /// the lazy list and went on growing under the finger (2026-11-04, StreamingScrollTests: 9 to 30 pt every delta).
     var held: String?
+    var hidesBotmuxSentinel = false
     /// The new conversation layout: the answer streams in the box it settles in (#1666).
     @Environment(\.chatLayout) private var layout
 
@@ -8444,7 +8500,7 @@ private struct ChatLiveText: View {
         let text = held ?? (Self.shows(store) ? store.liveText : "")
         // Held, or the stream over: the words whole, not revealed further (#6651).
         let done = held != nil || store.liveDone
-        if !text.isEmpty {
+        if !text.isEmpty, !hidesBotmuxSentinel || !BotmuxDisplay.hidesSentinel(text, role: "assistant", mode: .decoded) {
             if layout.on {
                 StreamingText(text: text, done: done)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8633,6 +8689,8 @@ final class ChatScratch {
         /// Whether completed Agent exchanges emit Changed Files cards (#12016), and the folder used for display paths.
         var turnChanges = false
         var cwd = ""
+        var botmuxMode: BotmuxDisplayMode = .decoded
+        var botmuxSession = false
     }
     /// What was sent from this chat lately: its transcript copy arriving brings you to the newest, others do not.
     var sentHere: [(id: UUID, text: String)] = []
