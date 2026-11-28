@@ -447,6 +447,7 @@ func (s *Service) sweepPRStatusesBounded(now time.Time) {
 // sweepDeploys looks again at the held tasks: once the running hub contains the work, the task is deployed (its
 // delivery live, its stage deploy) and asked to be verified; a task gone or watched too long is let go.
 func (s *Service) sweepDeploys(now time.Time) {
+	defer s.sweepTopicFollowupsBounded(now)
 	defer s.sweepParkRepliesBounded(now)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -608,6 +609,7 @@ func (s *Service) applyRuntimeDeploy(ctx context.Context, t Todo, pr string, r d
 		reason = s.deployGateText(ctx, r)
 	}
 	checksReason := i18n.T(s.lang(ctx), "assistant-reports.pr_checks_pending")
+	brief, _ := s.committedBriefOfTodo(t.ID)
 	_, err := s.updateTaskRuntime(ctx, t.ID, func(_ Todo, st *todoStage) (bool, error) {
 		if !st.hasTaskRuntime() || st.PR != t.PRURL ||
 			st.PR == "" && (len(st.PRs) != 1 || st.PRs[0] != pr) {
@@ -625,7 +627,7 @@ func (s *Service) applyRuntimeDeploy(ctx context.Context, t Todo, pr string, r d
 			return false, nil // an unknown deployment or an ordinary open PR adds no deployment evidence
 		}
 		st.Deploy = &deployWatch{PR: pr, Since: at.UTC(), Hub: r.Hub, State: r.State, Merged: merged, CheckedAt: at.UTC(), Gate: reason}
-		st.refreshRuntimeFromProviders(at, checksReason)
+		st.refreshRuntimeFromProviders(at, checksReason, brief.CompletionModeNow)
 		return true, nil
 	})
 	return err

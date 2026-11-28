@@ -270,6 +270,7 @@ final class AppModel {
     @ObservationIgnored private var sessionCells: [SessionKey: SessionCell] = [:]
     /// One observable retry presentation per chat that shows the composer's live-status note.
     @ObservationIgnored private var liveRetryCells: [SessionKey: SessionLiveRetryCell] = [:]
+    @ObservationIgnored private var liveCompactionCells: [SessionKey: SessionLiveCompactionCell] = [:]
     /// The same for views that show a session's last line and step (`sessionWithLine(_:)`, the task cards).
     @ObservationIgnored private var sessionLineCells: [SessionKey: SessionCell] = [:]
     /// One observable cell per workflow run a chat's card shows (`workflow(_:call:)`), by the Workflow call that
@@ -1393,6 +1394,7 @@ final class AppModel {
         for link in links { link.live.disconnect() }
         closeAllTunnels() // no hub left to route through a tunnel (also drops HubTransport's routes)
         PortForwarder.shared.closeAll() // no hub left for a forwarded port to reach
+        LoopbackCertificateTrustStore.shared.reset()
         LiveActivityController.shared.endAll() // its buttons would talk to a hub we no longer know
         // No key may open a push any more: the notification extension tries every key left (PushCrypto.allKeys).
         for g in Set(registry.groups).union(PushCrypto.allKeys().map(\.group)) { PushCrypto.removeKey(group: g) }
@@ -1488,11 +1490,23 @@ final class AppModel {
         return cell.value
     }
 
-    private func updateLiveRetry(_ key: SessionKey, _ live: SessionLive?, working: Bool, subscribed: Bool) {
+    /// How a main-loop compaction shows in one chat's running work line.
+    func liveCompaction(_ key: SessionKey) -> SessionLiveCompactionPresentation? {
+        if let cell = liveCompactionCells[key] { return cell.value }
+        let cell = SessionLiveCompactionCell()
+        liveCompactionCells[key] = cell
+        return cell.value
+    }
+
+    private func updateLiveStatus(_ key: SessionKey, _ live: SessionLive?, working: Bool, subscribed: Bool) {
         let next = SessionLiveRetryPresentation.of(live, working: working, subscribed: subscribed)
         let cell = liveRetryCells[key] ?? SessionLiveRetryCell()
         liveRetryCells[key] = cell
         if cell.value != next { cell.value = next }
+        let compaction = SessionLiveCompactionPresentation.of(live, subscribed: subscribed)
+        let compactionCell = liveCompactionCells[key] ?? SessionLiveCompactionCell()
+        liveCompactionCells[key] = compactionCell
+        if compactionCell.value != compaction { compactionCell.value = compaction }
     }
 
     /// One session for a view that shows what it says or does now (a task card): like `session(_:)`, and also drawn again
@@ -2593,6 +2607,7 @@ final class AppModel {
         detailAt[key] = nil
         forgetAgentLive(key)
         liveRetryCells[key] = nil
+        liveCompactionCells[key] = nil
         if openChat != key, visibleSession != key, !shown.contains(where: { $0.key == key }) {
             clearMissingSessionDetail(key)
             retainedSessionKeys.remove(key)
@@ -2608,7 +2623,7 @@ final class AppModel {
     /// chat starts each time it opens with none. The main chat's live text keeps its own rules.
     private func forgetAgentLive(_ key: SessionKey) {
         guard let store = existingChat(key) else { return }
-        updateLiveRetry(key, nil, working: false, subscribed: false)
+        updateLiveStatus(key, nil, working: false, subscribed: false)
         guard store.liveIsAgents else { return }
         deltas.drop(key)
         store.dropLive()
@@ -3073,7 +3088,7 @@ final class AppModel {
             #if os(iOS)
             if UIDevice.current.userInterfaceIdiom == .phone { pendingSpeechBacklog.insert(key) }
             #endif
-            updateLiveRetry(key, nil, working: false, subscribed: false)
+            updateLiveStatus(key, nil, working: false, subscribed: false)
             #if DEBUG
             _ = chat(key).apply(.event(.reconnected))
             #endif
@@ -3375,7 +3390,7 @@ final class AppModel {
                 }
             }
             for session in new where session.status != .working {
-                updateLiveRetry(session.key, nil, working: false, subscribed: isSubscribed(session.key))
+                updateLiveStatus(session.key, nil, working: false, subscribed: isSubscribed(session.key))
             }
             for session in new where session.assistant == true {
                 chats[session.key]?.updateQueuePhotoMarks(queued: session.queued, own: session.ownQueuedCount)
@@ -3776,7 +3791,7 @@ final class AppModel {
             c.screenUpdatedAt = .now
         case .live(let key, let live):
             let working = session(key).map { $0.status == .working } ?? true
-            updateLiveRetry(key, live, working: working, subscribed: isSubscribed(key))
+            updateLiveStatus(key, live, working: working, subscribed: isSubscribed(key))
         case .delta(let key, let text):
             chat(key).heardStream()
             let newest = deltas.pendingText(key)
@@ -4970,7 +4985,7 @@ final class AppModel {
         }
         do {
             try await api.close(key)
-            updateLiveRetry(key, nil, working: false, subscribed: isSubscribed(key))
+            updateLiveStatus(key, nil, working: false, subscribed: isSubscribed(key))
             func ended(_ list: [Session]) -> [Session] {
                 list.map { item in
                     guard item.key == key || (session.paneID != nil && item.paneID == session.paneID) else { return item }

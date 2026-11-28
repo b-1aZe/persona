@@ -23,7 +23,7 @@ import { isPinned } from "../../lib/pins";
 import { acknowledgeLaunch } from "../../lib/new-agent";
 import { useRuntimeSession } from "../../lib/runtime-session";
 import { SessionDetailNotice } from "../../ui/SessionDetailNotice";
-import { isBackgroundSupervisor } from "../../lib/background-supervisor";
+import { asBackgroundSupervisorCard, isBackgroundSupervisor, isBackgroundSupervisorInteraction } from "../../lib/background-supervisor";
 import { getSession, getState, hubHas, listenSession, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
 import { useStoreRows } from "../../lib/store-rows";
 import { useCodexThread, waitsForFirstMessage } from "../../lib/codex-waiting";
@@ -152,6 +152,7 @@ import { CardConversation } from "../../ui/AssistantCard";
 import { SessionMark, sessionMarkName } from "../../ui/AgentMark";
 import { sessionAgentName } from "../../lib/agent-kind";
 import { AssistantActionBar, DayLine, FeedLineView, QuickResultCard, RouteChip } from "../assistant/Tasks";
+import { groupAssistantLines, HandoffFeedRun, HandoffGroupStateContext } from "../assistant/Handoff";
 import { decisionKey, taskDecisionCards, type DecisionCard } from "../../lib/decision-pager";
 import { t } from "../../i18n";
 import { lazyDialog, lazyOverlay } from "../LazyOverlay";
@@ -162,6 +163,7 @@ import { AssistantUpdateSlot } from "./AssistantUpdateSlot";
 // first switch does not slide in an empty layer.
 const loadTerminal = () => import("../session/TerminalPanel");
 // Sharing settings load on their first open, outside the first screen (docs/web/web.md "First screen").
+const renderSimplifiedFeedLine = (item: FeedItem) => <FeedLineView item={item} simplified />;
 const ChatSearch = lazyDialog(() => import("./ChatSearch").then((m) => m.ChatSearch));
 const DecisionSourceDialog = lazyDialog(() => import("./DecisionSourceDialog").then((m) => m.DecisionSourceDialog));
 const LinkTodoDialog = lazyDialog(() => import("../LinkTodoDialog").then((m) => m.LinkTodoDialog));
@@ -411,7 +413,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   });
   const decisionDeferred = useFeed((s) => decisionTodo ? Boolean(s.later[decisionLaterKey(decisionTodo)]) : false);
   // The main conversation is always Persona (#1313): not its first message, the node's title for it.
-  const mainConversation = useStore((s) => s.assistant?.main);
+  const assistantInfo = useStore((s) => s.assistant);
+  const mainConversation = assistantInfo?.main;
   const isMain = Boolean(assistant && (mainCache || sid === mainConversation));
   // Full Agent pages and non-main Persona conversations may offer a way back; side panels, Team panels and the main chat do not.
   const backPage = Boolean(!embedded && !chrome && (inPage || (assistant && !isMain)));
@@ -475,12 +478,16 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   const sideParent = session && isSide(session) ? session.folded_under : undefined;
   // the space's other agents, its child sessions folded into their parents (#5120: a child is never one of them)
   const siblings = useStore((s) => (session?.space_id ? foldRows(s.sessions[mid] ?? []).filter((x) => x.space_id === session.space_id && activityOf(x) !== "offline") : []));
+  const shownManager = useShownManager();
+  const skillManager = useStore((s) => session?.manager ?? s.machines.find((m) => m.id === mid)?.manager) ?? shownManager;
   // its own requests and those of the child sessions folded under it (#5120, including cross-machine children via
   // folded_under_machine_id): a child's are answered here, in the order they came, each saying which child asks; a
-  // side session's chat (#7944) takes the cards of the rows that belong to it
+  // side session's chat (#7944) takes the cards of the rows that belong to it; main chat also surfaces user-facing cards
+  // raised by the hidden background supervisor conversation
   const ownCard = (ix: Interaction) =>
     (ix.machine_id === mid && (ix.session_id === sid || ix.folded_side === sid)) ||
-    ((ix.folded_under_machine_id || ix.machine_id) === mid && ix.folded_under === sid);
+    ((ix.folded_under_machine_id || ix.machine_id) === mid && ix.folded_under === sid) ||
+    (isMain && !embedded && isBackgroundSupervisorInteraction(assistantInfo, ix, skillManager));
   const interactions = useStore((s) => s.interactions.filter(ownCard));
   const answered = useStore((s) => Object.values(s.answered).filter((a) => ownCard(a.ix)));
   const delegated = useStore((s) => Object.values(s.delegated).filter((d) => ownCard(d.ix)));
@@ -854,10 +861,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     [draftKey, title, session?.manager, mainCache?.manager, canCompose, canFork, canRewind, detached, rewindCode, rewindDeclared, rewindLive, mid, sid, assistant, persona.name, forwardFrom, picker],
   );
   // the assistant works on any computer, so its @ menu offers workspaces too
-  const shownManager = useShownManager();
   const skillLauncher = usePickedLauncher(conversationKey(mid, sid));
   const assistantLauncher = useStore((s) => assistant ? s.assistant?.launcher : undefined);
-  const skillManager = useStore((s) => session?.manager ?? s.machines.find((m) => m.id === mid)?.manager) ?? shownManager;
   const skillEnvironment = JSON.stringify([session?.launcher, session?.model_pick, session?.pending_switch, session?.source_kind, assistantLauncher]);
   const mention = useMemo(() => ({ cwd: session?.cwd, self: draftKey, files: () => chatFiles(items.current), workspaces: Boolean(assistant),
     repositories: assistant ? skillManager : undefined,
@@ -1804,9 +1809,10 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   const hasOwnPendingInteraction = (session?.pending_interactions ?? 0) > 0 ||
     interactions.some((ix) => ix.machine_id === mid && ix.session_id === sid);
   const waitingOnUser = !detached && (state === "needs_you" || hasOwnPendingInteraction);
+  const stateUnknown = !detached && state === "unknown" && !turnFailure;
   const allLines = useMemo(
-    () => stabilizeLines(lastLines.current, chatLines(earlier.liveItems, { live: lastLive && !outgoing, background: foldBackground, main: isMain, foldRoutineRelayReplies, latestReplyNeedsAttention, stale, needsYou: waitingOnUser })),
-    [earlier.liveItems, lastLive, outgoing, foldBackground, isMain, foldRoutineRelayReplies, latestReplyNeedsAttention, stale, waitingOnUser],
+    () => stabilizeLines(lastLines.current, chatLines(earlier.liveItems, { live: lastLive && !outgoing, background: foldBackground, main: isMain, foldRoutineRelayReplies, latestReplyNeedsAttention, stale, needsYou: waitingOnUser, statusUnknown: stateUnknown })),
+    [earlier.liveItems, lastLive, outgoing, foldBackground, isMain, foldRoutineRelayReplies, latestReplyNeedsAttention, stale, waitingOnUser, stateUnknown],
   );
   lastLines.current = allLines;
   // The timeline split and the assistant display use the same history boundary: one feed walk per items change.
@@ -1849,6 +1855,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     () => (assistant ? displayLines(lines, quiet.timelineFeed, feedFrom) : NO_DISPLAY_LINES),
     [assistant, lines, quiet.timelineFeed, feedFrom],
   );
+  const groupedAssistantLines = useMemo(() => (assistant ? groupAssistantLines(assistantLines) : NO_DISPLAY_LINES), [assistant, assistantLines]);
+  const handoffGroupState = useMemo(() => new Map<string, boolean>(), [mid, sid]);
   // the last exchange while the chat is at work, even while a message of yours on its way draws it finished (live needs
   // !outgoing above): its words get no reply bar until the work is over (#5314, SegmentView `busy`)
   const busySegment = useMemo(() => (lastLive ? lines.findLast((line) => line.kind === "segment")?.id : undefined), [lastLive, lines]);
@@ -2301,7 +2309,7 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     await deliver(resolved.payload, uuid());
     return true;
   }, [deliver, mid, sid]);
-  const emptyAction = canCompose && !working && !waitingOnUser && !gate.blocked && !stoppedLine ? retryEmpty : undefined;
+  const emptyAction = canCompose && !working && !waitingOnUser && !stateUnknown && !gate.blocked && !stoppedLine ? retryEmpty : undefined;
   // the failure notice "Retry" was pressed on: kept here, not in the note, so it stays gone while the session goes through
   // needs-you and back before the hub clears it (iOS ChatView @State retried)
   const [retriedOn, setRetried] = useState<{ chat: string; reason?: string }>();
@@ -2540,8 +2548,10 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   // a worker's or subagent's own cards in its conversation (embedded) are its own there, not "From subagent"
   const docked = useMemo(() => {
     const mine = interactions.filter((ix) => !elsewhere(ix));
-    return embedded ? mine.map((ix) => (ix.machine_id === mid && ix.session_id === sid && ix.folded_under ? asOwnCard(ix) : ix)) : mine;
-  }, [interactions, elsewhere, embedded, mid, sid]);
+    if (embedded) return mine.map((ix) => (ix.machine_id === mid && ix.session_id === sid && ix.folded_under ? asOwnCard(ix) : ix));
+    if (isMain) return mine.map((ix) => (isBackgroundSupervisorInteraction(assistantInfo, ix, skillManager) ? asBackgroundSupervisorCard(ix, sid, mid) : ix));
+    return mine;
+  }, [interactions, elsewhere, embedded, isMain, assistantInfo, skillManager, mid, sid]);
   // A card belongs to the visible child pane, To Decide, or the stack. A task request must not appear in two places.
   const turnSplit = useMemo(() => (assistant ? splitTurnAsks(docked, mid, sid) : { turn: [], rest: docked }), [assistant, docked, mid, sid]);
   const decisionPlans = useFeed((s) => assistant ? s.plans : undefined);
@@ -2832,12 +2842,15 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
               />
             )}
             <ChatContext.Provider value={ctx}>
+              <HandoffGroupStateContext.Provider value={handoffGroupState}>
               <CardConversation.Provider value={assistant ? sid : ""}>
               {earlier.host && <Suspense fallback={null}><EarlierStretches {...earlier.host} offscreen={offscreen} /></Suspense>}
               {assistant
-                ? assistantLines.flatMap((d) => [
+                ? groupedAssistantLines.flatMap((d) => [
                     ...failedBefore(d.kind === "chat" ? d.id : ""),
-                    d.kind === "feed" ? (
+                    d.kind === "handoff_run" ? (
+                      <HandoffFeedRun key={d.id} items={d.items} renderOther={renderSimplifiedFeedLine} />
+                    ) : d.kind === "feed" ? (
                       <FeedLineView key={d.id} item={d.item} simplified />
                     ) : d.kind === "quick" ? (
                       <QuickResultCard key={d.id} result={d.result} />
@@ -2892,6 +2905,7 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
                 />
               )])}
               </CardConversation.Provider>
+              </HandoffGroupStateContext.Provider>
             </ChatContext.Provider>
             </LatestMessageTime.Provider>
             </LiveClockContext.Provider>
