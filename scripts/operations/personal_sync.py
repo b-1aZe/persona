@@ -143,7 +143,9 @@ def build_test(src, stage, expected, fixture_file):
             raise ValueError(f"incorrect stamp on {name}")
     BAD = "TEST_FAIL"
     cmd("node", "--test", "integrations/antigravity/test/usage-runtime.test.js", cwd=src)
-    cmd("bash", "scripts/ci/server.sh", "build", cwd=src, timeout=3600)
+    # The sample extension's nested Unix socket must fit macOS's path limit.
+    cmd("bash", "scripts/ci/server.sh", "build", cwd=src, timeout=3600,
+        env=dict(os.environ, TMPDIR="/private/tmp"))
     isolated = ["python3", src / "scripts/test/server_test_env.py", "--database-file", fixture_file,
                 "--", "go", "test", "-count=1", "-timeout=8m", "-p", "2"]
     cmd(*isolated, "./internal/update", "./internal/hubedge", "./internal/managerupdate", cwd=server)
