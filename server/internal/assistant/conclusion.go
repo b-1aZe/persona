@@ -168,7 +168,7 @@ func (s *Service) conclusionCard(ctx context.Context, t Todo, a acceptAsk) *botc
 			c.Markdown(line)
 		}
 	}
-	if d := a.deadlineText(l, s.location(ctx), time.Now()); d != "" && decideAsk(&a) && a.AcceptedAt.IsZero() && a.AgentReply == nil {
+	if d := a.deadlineText(l, s.location(ctx), time.Now(), t.Agents); d != "" && decideAsk(&a) && a.AcceptedAt.IsZero() && a.AgentReply == nil {
 		c.Markdown(botcard.EscapeMarkdown(d))
 	}
 	// Self-contained (#3804): where it came from and stands, what each option leads to, what waiting costs.

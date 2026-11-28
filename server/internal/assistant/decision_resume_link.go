@@ -2,7 +2,6 @@ package assistant
 
 import (
 	"maps"
-	"slices"
 	"time"
 
 	"github.com/nwverse/persona/server/internal/proto"
@@ -17,58 +16,82 @@ type resumeAttempt struct {
 	agent          SessionRef
 }
 
-type resumeEvidence struct {
-	at        time.Time
-	ownerOnly bool
+// The session list may change while a supervisor fetches it or checks an archived session's stop cause.
+type resumeReview struct {
+	reviewer string
+	listedAt time.Time
 }
 
-func (b *todoBook) beginResumeAttempt(sender, reviewer, machine string, c proto.Session) (resumeAttempt, *resumeEvidence) {
+func beginResumeReview(reviewer string) resumeReview {
+	return resumeReview{reviewer: reviewer, listedAt: time.Now()}
+}
+
+func (b *todoBook) resumeBindingLocked(machine, session string) (*Todo, *TodoAgent) {
+	t := b.todos[b.activeBySession[[2]string{machine, session}]]
+	if t != nil && t.DoneAt == nil {
+		for i := range t.Agents {
+			a := &t.Agents[i]
+			if a.MachineID == machine && a.SessionID == session && a.active() {
+				return t, a
+			}
+		}
+	}
+	return nil, nil
+}
+
+// A live row or a verified resumable stop supersedes older refusals about this Agent. The timestamp belongs to
+// the active binding so an earlier read still in flight cannot recreate a refusal after this observation.
+func (b *todoBook) invalidateResumeLocked(a *TodoAgent, at time.Time) {
+	if !at.After(a.resumeInvalidatedAt) {
+		return
+	}
+	a.resumeInvalidatedAt = at
+	maps.DeleteFunc(b.refusedResumes, func(r resumeAttempt, refused time.Time) bool {
+		return r.agent.MachineID == a.MachineID && r.agent.SessionID == a.SessionID && !refused.After(at)
+	})
+}
+
+func (b *todoBook) noteResumeCheck(sender string, review resumeReview, machine string, c proto.Session, ownerOnly bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id := b.activeBySession[[2]string{machine, c.SessionID}]
-	t := b.todos[id]
-	if t == nil || t.DoneAt != nil || othersTask(c, *t, sender) != nil {
-		return resumeAttempt{}, nil
+	t, a := b.resumeBindingLocked(machine, c.SessionID)
+	if a == nil || othersTask(c, *t, sender) != nil || review.listedAt.Before(a.LinkedAt) || !review.listedAt.After(a.resumeInvalidatedAt) {
+		return
 	}
-	now := time.Now().UTC()
-	maps.DeleteFunc(b.refusedResumes, func(_ resumeAttempt, e *resumeEvidence) bool { return now.Sub(e.at) > decisionRecheckAfter })
+	if !ownerOnly {
+		b.invalidateResumeLocked(a, review.listedAt)
+		return
+	}
+	now := time.Now()
+	maps.DeleteFunc(b.refusedResumes, func(_ resumeAttempt, at time.Time) bool { return now.Sub(at) > decisionRecheckAfter })
 	if b.refusedResumes == nil {
-		b.refusedResumes = make(map[resumeAttempt]*resumeEvidence)
+		b.refusedResumes = make(map[resumeAttempt]time.Time)
 	}
-	attempt := resumeAttempt{todo: id, reviewer: reviewer, agent: SessionRef{MachineID: machine, SessionID: c.SessionID}}
-	e := &resumeEvidence{at: now}
-	b.refusedResumes[attempt] = e
-	return attempt, e
-}
-
-func (b *todoBook) finishResumeAttempt(attempt resumeAttempt, e *resumeEvidence, ownerOnly bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.refusedResumes[attempt] != e {
-		return // a newer attempt, live session update or closed task superseded this lookup
-	}
-	if ownerOnly {
-		e.ownerOnly = true
-	} else {
-		delete(b.refusedResumes, attempt)
+	attempt := resumeAttempt{todo: t.ID, reviewer: review.reviewer, agent: SessionRef{MachineID: machine, SessionID: c.SessionID}}
+	if review.listedAt.After(b.refusedResumes[attempt]) {
+		b.refusedResumes[attempt] = review.listedAt
 	}
 }
 
 func (b *todoBook) observeResumedSessions(d DeviceSessions) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	maps.DeleteFunc(b.refusedResumes, func(attempt resumeAttempt, _ *resumeEvidence) bool {
-		return attempt.agent.MachineID == d.MachineID && slices.ContainsFunc(d.Sessions, func(c proto.Session) bool {
-			if c.SessionID != attempt.agent.SessionID || c.Archived || stoppedAgent(c) {
-				return false
+	now := time.Now()
+	for i := range d.Sessions {
+		c := &d.Sessions[i]
+		_, a := b.resumeBindingLocked(d.MachineID, c.SessionID)
+		if a == nil || c.Archived || stoppedAgent(*c) {
+			continue
+		}
+		switch c.Status {
+		case proto.StatusWorking, proto.StatusIdle, proto.StatusDone, proto.StatusBlocked:
+		default:
+			if c.Capabilities == nil || !c.Capabilities.Send {
+				continue
 			}
-			switch c.Status {
-			case proto.StatusWorking, proto.StatusIdle, proto.StatusDone, proto.StatusBlocked:
-				return true
-			}
-			return c.Capabilities != nil && c.Capabilities.Send
-		})
-	})
+		}
+		b.invalidateResumeLocked(a, now)
+	}
 }
 
 // takeResumeTerminal consumes confirmed refusals for this review. Only one current binding can identify the target.
@@ -81,17 +104,17 @@ func (b *todoBook) takeResumeTerminal(id, reviewer string, now time.Time) *Sessi
 	}
 	var target *SessionRef
 	var count int
-	for attempt, e := range b.refusedResumes {
-		if now.Sub(e.at) > decisionRecheckAfter {
+	for attempt, at := range b.refusedResumes {
+		if now.Sub(at) > decisionRecheckAfter {
 			delete(b.refusedResumes, attempt)
 			continue
 		}
-		if attempt.todo != id || attempt.reviewer != reviewer || !e.ownerOnly {
+		if attempt.todo != id || attempt.reviewer != reviewer {
 			continue
 		}
 		delete(b.refusedResumes, attempt)
 		a, bound := findActiveLinkedAgent(*t, attempt.agent.MachineID, attempt.agent.SessionID)
-		if bound && !e.at.Before(a.LinkedAt) {
+		if bound && !at.Before(a.LinkedAt) {
 			target = &attempt.agent
 			count++
 		}

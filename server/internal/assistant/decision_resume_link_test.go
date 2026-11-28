@@ -1,12 +1,13 @@
 package assistant
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/nwverse/persona/server/internal/db"
-	"strings"
-	"testing"
 
 	"github.com/nwverse/persona/server/internal/proto"
 )
@@ -54,7 +55,7 @@ func TestDecisionTerminalAfterResumeRefusal(t *testing.T) {
 				t.Fatal(err)
 			}
 			stopped := proto.Session{MachineID: ag.MachineID, SessionID: ag.SessionID, Capabilities: tc.caps}
-			err := s.resumeAllowed(t.Context(), todo.Origin, Device{ID: ag.MachineID}, stopped, "needs its context", nil, todo.Origin)
+			err := s.resumeAllowed(t.Context(), todo.Origin, Device{ID: ag.MachineID}, stopped, "needs its context", nil, beginResumeReview(todo.Origin))
 			if tc.want && err == nil {
 				t.Fatal("expected resume refusal")
 			}
@@ -105,7 +106,7 @@ func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
 			}
 			device := Device{ID: ag.MachineID}
 			stopped := proto.Session{MachineID: ag.MachineID, SessionID: ag.SessionID, Capabilities: &proto.SessionCapabilities{StopCause: proto.StopUser}}
-			if err := s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, self); err == nil {
+			if err := s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, beginResumeReview(self)); err == nil {
 				t.Fatal("expected the manual-resume refusal")
 			}
 			switch scenario {
@@ -127,13 +128,13 @@ func TestDecisionTerminalRequiresCurrentRefusal(t *testing.T) {
 				}
 			case "resumable retry":
 				stopped.Capabilities.StopCause = proto.StopUnknown
-				_ = s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, self)
+				_ = s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, beginResumeReview(self))
 			case "two refusals":
 				stopped.SessionID = "other-agent"
 				if err := s.linkTodoAgent(t.Context(), todo.ID, device.ID, stopped.SessionID, "", "", ""); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, self); err == nil {
+				if err := s.resumeAllowed(t.Context(), self, device, stopped, "needs its context", nil, beginResumeReview(self)); err == nil {
 					t.Fatal("expected the second manual-resume refusal")
 				}
 			case "relinked Agent":
@@ -311,8 +312,68 @@ func TestDecisionTerminalCleansExpiredRefusalsOnReview(t *testing.T) {
 	now := time.Now().UTC()
 	key := resumeAttempt{todo: "task", reviewer: "supervisor", agent: SessionRef{MachineID: "machine", SessionID: "worker"}}
 	b := todoBook{todos: map[string]*Todo{"task": {ID: "task", Agents: []TodoAgent{{MachineID: "machine", SessionID: "worker"}}}},
-		refusedResumes: map[resumeAttempt]*resumeEvidence{key: {at: now.Add(-2 * decisionRecheckAfter), ownerOnly: true}}}
+		refusedResumes: map[resumeAttempt]time.Time{key: now.Add(-2 * decisionRecheckAfter)}}
 	if target := b.takeResumeTerminal("task", "supervisor", now); target != nil || len(b.refusedResumes) != 0 {
 		t.Fatalf("expired refusal, target=%v, remaining=%d", target, len(b.refusedResumes))
 	}
+}
+
+func TestDecisionTerminalRecoveryAfterStoppedSnapshot(t *testing.T) {
+	for _, via := range []string{"agent_send", "rework"} {
+		t.Run(via, func(t *testing.T) {
+			s, f, todo := stoppedTaskLeader(t)
+			ag := todo.Agents[0]
+			stopped := stoppedWithCause(ag.SessionID, proto.StopUser)
+			f.setSessions(ag.MachineID, stopped)
+			observed := false
+			f.mu.Lock()
+			f.afterList = map[string]func(){ag.MachineID: func() {
+				observed = true
+				live := boxAgent(ag.SessionID)
+				f.setSessions(ag.MachineID, live)
+				s.SessionsChanged(t.Context(), DeviceSessions{MachineID: ag.MachineID, Sessions: []proto.Session{live}})
+			}}
+			f.mu.Unlock()
+			ctx := listHooked(t.Context())
+			var err error
+			if via == "agent_send" {
+				args, _ := json.Marshal(map[string]any{"machine": ag.MachineID, "session_id": ag.SessionID, "text": "Finish the investigation", "resume": true, "resume_why": "The findings are in this session"})
+				_, err = s.runTool(ctx, "server", "conv1", "agent_send", args)
+			} else {
+				// Explicit rework has already authorized this reviewer; the selected task Agent is looked up here.
+				_, err = s.sendToTask(context.WithValue(ctx, reworkReviewerKey{}, beginResumeReview("conv1")), todo, "Finish the investigation")
+			}
+			if !observed || err == nil || !strings.Contains(err.Error(), "user's Resume") {
+				t.Fatalf("stale snapshot lookup: observed=%v, err=%v", observed, err)
+			}
+			if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
+				t.Fatal(err)
+			}
+			if row := listedAsk(t, s, todo.ID); row == nil || row["resume_terminal"] != nil {
+				t.Fatalf("stale stopped snapshot supplied a terminal: %v", row)
+			}
+		})
+	}
+}
+
+func TestDecisionTerminalArchiveRetryTimeoutKeepsConfirmedRefusal(t *testing.T) {
+	s, f, todo := newSupervisedService(t)
+	waitsForReview(t, s, f, todo.ID, "Choose how to proceed.")
+	ag := todo.Agents[0]
+	c := archiveRow(agentArchive{Session: archiveSnapshot(stoppedWithCause(ag.SessionID, proto.StopIdle)), Archived: true})
+	f.answerNode("session.info", func(string, json.RawMessage) (any, error) { return map[string]any{"stop_cause": proto.StopUser}, nil })
+	refuseResumeForDecision(t, s, f, todo.Origin, c)
+	f.answerNode("session.info", func(string, json.RawMessage) (any, error) { return nil, context.DeadlineExceeded })
+	if _, err := runJSON(t, s, todo.Origin, "agent_send", map[string]any{"machine": ag.MachineID, "session_id": "bound-worker", "text": "Continue", "resume": true, "resume_why": "Keep the findings"}); err == nil || !strings.Contains(err.Error(), "could not verify") {
+		t.Fatalf("retry should still report the failed archive lookup: %v", err)
+	}
+	if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
+		t.Fatal(err)
+	}
+	if row := listedAsk(t, s, todo.ID); row != nil {
+		if ref, _ := row["resume_terminal"].(map[string]any); ref["session_id"] == ag.SessionID && ref["machine_id"] == ag.MachineID {
+			return
+		}
+	}
+	t.Fatal("archive timeout discarded the confirmed refusal")
 }

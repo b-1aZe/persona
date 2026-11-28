@@ -260,3 +260,33 @@ func TestTerminalResumeDeadlineOnOutsideDecisionReturnsChoiceToSource(t *testing
 		t.Fatalf("outside default generated %d reminders", n)
 	}
 }
+
+// A to-do PATCH can finish after the deadline worker has checked its round. The push sender's
+// own snapshot decides whether that specific reminder is still due.
+func TestTerminalResumeOverduePushRechecksRoundAndTask(t *testing.T) {
+	for _, change := range []string{"close", "replace"} {
+		t.Run(change, func(t *testing.T) {
+			at := time.Now().UTC().Add(-time.Hour)
+			e := dismissalEnv(t, &memStore{}, at, true)
+			e.s.todos.todos["task"].Origin = "conv"
+			a := e.s.accept.asks["task"]
+			a.Recommend, a.Options[0].Label, a.DueAt = legacyTerminalOption, legacyTerminalOption, time.Now().UTC()
+			checked, err := e.s.askRound("task", a.AskedAt.Format(timeKeyLayout))
+			if err != nil || checked == nil || checked.DueAt.IsZero() {
+				t.Fatalf("fixture has no handled deadline: %+v, %v", checked, err)
+			}
+			switch change {
+			case "close":
+				e.must("PATCH", "/api/v1/todos/task", `{"done":true}`)
+			case "replace":
+				e.s.accept.mu.Lock()
+				a.AskedAt = a.AskedAt.Add(time.Minute)
+				e.s.accept.mu.Unlock()
+			}
+			sent, err := e.s.pushDecisionAbout(t.Context(), "task", checked.AskedAt)
+			if err != nil || sent || deadlinePushes(e.f, "task") != 0 {
+				t.Fatalf("obsolete round sent: %v, error %v, pushes %d", sent, err, deadlinePushes(e.f, "task"))
+			}
+		})
+	}
+}

@@ -239,7 +239,7 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 			return fmt.Sprintf("Task %s is already accepted and closed.", t.ID) + terminalCleanupWords(terminalCleanupStatus(plan)), nil
 		}
 	}
-	if decided && slices.ContainsFunc(decision.Options, func(o DecisionOption) bool { return terminalResumeLabel(o.Label) }) {
+	if decided && slices.ContainsFunc(decision.Options, func(o DecisionOption) bool { return terminalResumeLabel(o.Label, t.Agents) }) {
 		return "", errors.New("Resume on a terminal page is an action only the owner can perform. Put that instruction in the reason and give options the supervisor can carry out, such as starting a replacement or waiting for the owner. A decision button cannot resume an Agent")
 	}
 	if err := restated(t, a.Verdict, decision); err != nil {
@@ -838,7 +838,7 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 	}
 	text := prompts.RenderSuperviseRework(prompts.SuperviseRework{Round: v.Round, Max: displayMax, Checks: reworkChecks(checks), Note: note})
 	// The task's origin still owns delivery. Attribute an owner-only refusal to the supervisor who tried this rework.
-	sent, err := s.sendToTask(context.WithValue(ctx, reworkReviewerKey{}, self), t, text)
+	sent, err := s.sendToTask(context.WithValue(ctx, reworkReviewerKey{}, beginResumeReview(self)), t, text)
 	if err != nil {
 		return "", fmt.Errorf("recorded rework round %d, but sending it to the agent failed: %v (send it with agent_send)", v.Round, err)
 	}
@@ -1268,7 +1268,7 @@ func (s *Service) resumeStoppedTaskAgent(ctx context.Context, t Todo, c proto.Se
 	if !ok {
 		return "", errors.New("its machine is offline")
 	}
-	reviewer, _ := ctx.Value(reworkReviewerKey{}).(string)
+	reviewer, _ := ctx.Value(reworkReviewerKey{}).(resumeReview)
 	if err := s.resumeAllowed(ctx, t.Origin, am, c, "rework of this task", nil, reviewer); err != nil {
 		return "", err
 	}

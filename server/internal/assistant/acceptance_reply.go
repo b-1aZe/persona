@@ -36,8 +36,10 @@ func (s *Service) conclusionQuestion(ctx context.Context, ev *botcard.MessageEve
 	if !ask.Conclusion || text == "" {
 		return false
 	}
+	todo, ok := s.todoNow(id)
+	literal := unquoteOption(text)
 	question := strings.ContainsAny(text, "?？") // i18n-ignore: question marks in the owner's reply, never shown
-	if ask.manualTerminalAnswer(text) && (!question || text == ask.Recommend || slices.ContainsFunc(ask.Options, func(o DecisionOption) bool { return o.Label == text })) {
+	if ask.manualTerminalAnswer(text, todo.Agents) && (!question || literal == ask.Recommend || slices.ContainsFunc(ask.Options, func(o DecisionOption) bool { return o.Label == literal })) {
 		return false // acceptReply refuses the option; a question must repeat the displayed label verbatim
 	}
 	if !question {
@@ -51,7 +53,6 @@ func (s *Service) conclusionQuestion(ctx context.Context, ev *botcard.MessageEve
 			}
 		}
 	}
-	todo, ok := s.todoNow(id)
 	if !ok {
 		return false
 	}
@@ -169,7 +170,7 @@ func (s *Service) acceptReply(ctx context.Context, messageID, text string, media
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-feishu_cards.already_handled"))
 		return true
 	}
-	if current.manualTerminalAnswer(text) {
+	if current.manualTerminalAnswer(text, t.Agents) {
 		s.reviewDismissals.actions.release(id)
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-reports.manual_terminal_resume"))
 		return true
@@ -346,7 +347,7 @@ func (s *Service) acceptTryAsDismissalLocked(ctx context.Context, id, card strin
 		b.mu.Unlock()
 		return s.answerOutside(ctx, id, asked, outsideAnswer{Option: recommend}, byDefault)
 	}
-	if a.manualTerminalRecommendation() {
+	if a.manualTerminalRecommendation(t.Agents) {
 		b.mu.Unlock()
 		return acceptResult{}, i18n.Err("assistant-reports.manual_terminal_resume")
 	}

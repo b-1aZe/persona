@@ -26,7 +26,8 @@ func TestTerminalResumeLabelsInDecisionOptions(t *testing.T) {
 		manual bool
 	}{
 		{legacyTerminalOption, true},
-		{"Resume 00000001 on its terminal page", true},
+		{"Resume on a terminal page", true},
+		{"Open terminal and resume release-42", false},
 		{"Open terminal and resume Agent", true},
 		{"Manually resume on its terminal page", true},
 		{"Use terminal Resume", true},
@@ -48,7 +49,7 @@ func TestTerminalResumeLabelsInDecisionOptions(t *testing.T) {
 		{"ターミナルで再開せず新規エージェントを起動", false},
 		{"ターミナル設定を戻してビルドを再開", false},
 	} {
-		if got := terminalResumeLabel(tc.label); got != tc.manual {
+		if got := terminalResumeLabel(tc.label, nil); got != tc.manual {
 			t.Errorf("terminalResumeLabel(%q) = %v, want %v", tc.label, got, tc.manual)
 		}
 	}
@@ -57,7 +58,7 @@ func TestTerminalResumeLabelsInDecisionOptions(t *testing.T) {
 func TestTerminalResumeLegacyBindingInEveryLanguage(t *testing.T) {
 	now := time.Now()
 	task := Todo{Agents: []TodoAgent{{MachineID: "box", SessionID: "workerid-original"}}}
-	for _, label := range []string{"Resume Agent workerid on its terminal page", "在终端上恢复 Agent workerid", "ターミナルでエージェント workerid を再開"} {
+	for _, label := range []string{"Resume workerid on its terminal page", "Resume Agent workerid on its terminal page", "在终端上恢复 Agent workerid", "ターミナルでエージェント workerid を再開"} {
 		if ref := decisionTerminal(task, label, now); ref == nil || ref.SessionID != task.Agents[0].SessionID {
 			t.Errorf("no link to the session named by %q: %+v", label, ref)
 		}
@@ -67,6 +68,78 @@ func TestTerminalResumeLegacyBindingInEveryLanguage(t *testing.T) {
 		if ref := decisionTerminal(task, label, now); ref == nil || ref.SessionID != task.Agents[0].SessionID {
 			t.Errorf("no link to the session named by %q: %+v", label, ref)
 		}
+	}
+}
+
+func TestTerminalResumeProductInstructionsAcrossAnswersAndDeadline(t *testing.T) {
+	labels := []string{"Resume on a terminal page", "Resume workerid on its terminal page"}
+	for _, lang := range []i18n.Lang{i18n.En, i18n.ZhHans, i18n.Ja} {
+		// The node explains the refusal, then gives the instruction. The card gives the instruction first.
+		sentences := func(key string) []string {
+			return strings.FieldsFunc(i18n.T(lang, key), func(r rune) bool { return r == '.' || r == '。' })
+		}
+		refusal := sentences("rpc-errors.resume_not_allowed")
+		labels = append(labels, strings.TrimSpace(refusal[len(refusal)-1]), sentences("assistant-reports.manual_terminal_resume")[0])
+	}
+	for _, label := range labels {
+		t.Run(label, func(t *testing.T) {
+			st := todoTestDB(t)
+			s, f, todo := newDecisionAnswerServiceOn(t, st)
+			waitsForReview(t, s, f, todo.ID, "Choose the next step.")
+			if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
+				t.Fatal(err)
+			}
+			// Keep the live recipient in the fixture. Old choices can name another bound session by its first eight letters.
+			s.todos.mu.Lock()
+			task := s.todos.todos[todo.ID]
+			task.Agents = append(task.Agents, TodoAgent{MachineID: "box", SessionID: "workerid-original"})
+			s.todos.mu.Unlock()
+			setLegacyResumeOption(s, todo.ID, 0, label)
+			a := askOf(s, todo.ID)
+			round := a.AskedAt.Format(timeKeyLayout)
+			sent := len(sentToAgent(f))
+			if row := s.todoAsks(t.Context())[todo.ID]; row.Default != defaultNever {
+				t.Fatalf("advertised executable default %q", row.Default)
+			}
+			if _, err := s.acceptTry(t.Context(), todo.ID, ""); !manualResumeRefused(err) {
+				t.Fatalf("accepting the recommendation: %v", err)
+			}
+			if _, err := s.chooseOption(t.Context(), todo.ID, round, label); !manualResumeRefused(err) {
+				t.Fatalf("choosing the option: %v", err)
+			}
+			if _, err := s.answerDecisionText(t.Context(), todo.ID, round, "“"+label+"”"); !manualResumeRefused(err) {
+				t.Fatalf("quoting the option: %v", err)
+			}
+			pastDeadline(t, s, todo.ID)
+			for range 3 {
+				s.sweepTaskDeadlines(time.Now())
+			}
+			cur := askOf(s, todo.ID)
+			rows, err := st.ListTodoDecisions(t.Context(), todo.ID, true)
+			if !cur.AcceptedAt.IsZero() || cur.DueAt.IsZero() || cur.ByDefault || len(sentToAgent(f)) != sent || err != nil || len(rows) != 0 {
+				t.Fatalf("legacy terminal option settled or sent: ask=%+v decisions=%v err=%v sends=%d", cur, rows, err, len(sentToAgent(f))-sent)
+			}
+		})
+	}
+}
+
+func TestTerminalResumeUnboundReleaseNameKeepsDefault(t *testing.T) {
+	st := todoTestDB(t)
+	s, f, todo := newDecisionAnswerServiceOn(t, st)
+	waitsForReview(t, s, f, todo.ID, "Choose the next step.")
+	const release = "Open terminal and resume release-42"
+	args := rolloutDecision()
+	args["recommend"] = release
+	args["options"].([]map[string]string)[0]["label"] = release
+	if _, err := reviewErr(s, todo.ID, args); err != nil {
+		t.Fatalf("refused the supervisor's release option: %v", err)
+	}
+	before := len(sentToAgent(f))
+	pastDeadline(t, s, todo.ID)
+	s.sweepTaskDeadlines(time.Now())
+	rows, err := st.ListTodoDecisions(t.Context(), todo.ID, true)
+	if err != nil || len(rows) != 1 || rows[0].Choice != release || !askOf(s, todo.ID).ByDefault || len(sentToAgent(f)) != before+1 {
+		t.Fatalf("release decision did not execute: rows=%+v err=%v sends=%d", rows, err, len(sentToAgent(f))-before)
 	}
 }
 
@@ -82,7 +155,7 @@ func TestTerminalResumeTextAnswerKeepsDecisionOpen(t *testing.T) {
 	calls := f.callCount()
 	for _, label := range []string{legacyTerminalOption, "在终端点 Resume", "ターミナルで Resume を押す"} {
 		setLegacyResumeOption(s, todo.ID, 1, label)
-		reply := strings.ToLower(label) + "。"
+		reply := "“" + strings.ToLower(label) + "”."
 		answer, _ := json.Marshal(map[string]string{"text": reply})
 		web := answerTodoAsk(s, todo.ID, askDecisionPrefix+round, string(answer))
 		var refused struct{ Code, Delivered string }
@@ -127,7 +200,7 @@ func TestTerminalResumeFeishuRepliesKeepDecisionOpen(t *testing.T) {
 	sent := len(sentToAgent(f))
 	beforeSupervisor := sendOnceText(f)
 	a := askOf(s, todo.ID)
-	for _, msg := range []struct{ id, reply string }{{"om_letter", "A"}, {"om_verbatim", label}} {
+	for _, msg := range []struct{ id, reply string }{{"om_letter", "A"}, {"om_verbatim", label}, {"om_quoted", "“" + label + "”"}} {
 		n := len(notes())
 		feishuSay(t, s, f, nil, p2pText(msg.id, msg.reply, "", a.MessageID), "")
 		if got := askOf(s, todo.ID); !got.AcceptedAt.IsZero() || !got.DueAt.IsZero() || len(sentToAgent(f)) != sent || sendOnceText(f) != beforeSupervisor {

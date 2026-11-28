@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -42,17 +41,18 @@ type TodoSpace struct {
 }
 
 type TodoAgent struct {
-	MachineID   string     `json:"machine_id"`
-	SessionID   string     `json:"session_id"`
-	LinkedAt    time.Time  `json:"linked_at"`
-	ReleasedAt  *time.Time `json:"released_at,omitempty"`
-	Title       string     `json:"title"`
-	Cwd         string     `json:"cwd"`
-	Agent       string     `json:"agent"`
-	StartError  string     `json:"start_error,omitempty"`
-	Source      string     `json:"source"`
-	Via         string     `json:"via,omitempty"`
-	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+	MachineID           string     `json:"machine_id"`
+	SessionID           string     `json:"session_id"`
+	LinkedAt            time.Time  `json:"linked_at"`
+	ReleasedAt          *time.Time `json:"released_at,omitempty"`
+	Title               string     `json:"title"`
+	Cwd                 string     `json:"cwd"`
+	Agent               string     `json:"agent"`
+	StartError          string     `json:"start_error,omitempty"`
+	Source              string     `json:"source"`
+	Via                 string     `json:"via,omitempty"`
+	DismissedAt         *time.Time `json:"dismissed_at,omitempty"`
+	resumeInvalidatedAt time.Time  // in-memory observation on this binding, used only for pending supervisor resume refusals
 }
 
 type Todo struct {
@@ -240,11 +240,11 @@ type todoBook struct {
 	loaded              bool
 	todos               map[string]*Todo
 	deletedRequestGates map[string]bool
-	activeBySession     map[[2]string]string              // (machine_id, session_id) -> the open todo it works for
-	refusedResumes      map[resumeAttempt]*resumeEvidence // pending manual-resume decisions, scoped to this binding
-	snapshotSyncing     map[[2]string]bool                // (machine_id, session_id) whose title is being written
-	spacesByKey         map[string]string                 // "<machine_id>/<space>" -> todo_id
-	botmux              map[string]botmuxSeen             // by machine: its botmux sessions' chats and dispatches (todo_sessions.go)
+	activeBySession     map[[2]string]string        // (machine_id, session_id) -> the open todo it works for
+	refusedResumes      map[resumeAttempt]time.Time // pending manual-resume decisions, scoped to this binding
+	snapshotSyncing     map[[2]string]bool          // (machine_id, session_id) whose title is being written
+	spacesByKey         map[string]string           // "<machine_id>/<space>" -> todo_id
+	botmux              map[string]botmuxSeen       // by machine: its botmux sessions' chats and dispatches (todo_sessions.go)
 
 	tokensMu sync.Mutex
 	tokens   map[string]*tokenSync // by machine (todo_sessions.go)
@@ -1773,7 +1773,13 @@ func (s *Service) setTodoRow(id string, row db.TodoRow, guard func(*Todo) bool) 
 	t.Notes = row.Notes
 	becameDone := t.DoneAt == nil && row.DoneAt != nil
 	if becameDone {
-		maps.DeleteFunc(s.todos.refusedResumes, func(a resumeAttempt, _ *resumeEvidence) bool { return a.todo == id })
+		// A stopped Agent can keep the same binding when its task is closed and later reopened.
+		now := time.Now()
+		for i := range t.Agents {
+			if t.Agents[i].active() {
+				s.todos.invalidateResumeLocked(&t.Agents[i], now)
+			}
+		}
 	}
 	reopened := t.DoneAt != nil && row.DoneAt == nil
 	var reopenedEvent map[string]any

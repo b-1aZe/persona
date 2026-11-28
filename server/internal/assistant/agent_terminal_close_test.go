@@ -329,7 +329,7 @@ func TestTerminalResumeOptionTargetsOnlyItsBoundAgent(t *testing.T) {
 	if decisionTerminal(task, "Resume 00000002 on its terminal page", asked) != nil {
 		t.Fatal("unrelated terminal")
 	}
-	if terminalResumeLabel("Start a replacement") {
+	if terminalResumeLabel("Start a replacement", nil) {
 		t.Fatal("ordinary decision classified as a terminal action")
 	}
 	now := time.Now()

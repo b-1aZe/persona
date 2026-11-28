@@ -534,7 +534,7 @@ func TestAskRisk(t *testing.T) {
 			Recommend: legacyTerminalOption, Reversible: true}, assistantwire.OwnerAskRiskSafe},
 		{"a Please verify", acceptAsk{}, assistantwire.OwnerAskRiskSafe},
 	} {
-		if got := askRisk(&tc.a); got != tc.want {
+		if got := askRisk(&tc.a, nil); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
 		}
 	}
@@ -664,7 +664,7 @@ func TestTodoFixturesListTheManagersRisk(t *testing.T) {
 				if !told {
 					continue
 				}
-				if want := askRisk(&a); l.Risk != want {
+				if want := askRisk(&a, nil); l.Risk != want {
 					t.Errorf("%s %s: the ask lists risk %q, the manager gives %q", file, c.Name, l.Risk, want)
 				}
 				checked[c.Name]++
