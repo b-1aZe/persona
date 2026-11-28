@@ -1,7 +1,10 @@
 package assistant
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona/server/internal/i18n"
 )
@@ -17,6 +20,56 @@ func setLegacyResumeOption(s *Service, id string, index int, label string) {
 	}
 }
 
+func TestTerminalResumeLabelsInDecisionOptions(t *testing.T) {
+	for _, tc := range []struct {
+		label  string
+		manual bool
+	}{
+		{legacyTerminalOption, true},
+		{"Resume 00000001 on its terminal page", true},
+		{"Open terminal and resume Agent", true},
+		{"Manually resume on its terminal page", true},
+		{"Use terminal Resume", true},
+		{"Resume the session in the terminal", true},
+		{"Open the terminal and resume the session", true},
+		{"在终端上恢复 Agent", true},
+		{"在终端点 Resume", true},
+		{"ターミナルでエージェントを再開", true},
+		{"ターミナルで Resume を押す", true},
+		{"Do not resume on the terminal; continue in this conversation.", false},
+		{"Resume the rollout without opening a terminal.", false},
+		{"Open terminal and resume the build", false},
+		{"Resume debugging in the terminal", false},
+		{"Open terminal and resume compilation", false},
+		{"不在终端恢复，启动新 Agent", false},
+		{"放弃终端恢复，改开替代方案", false},
+		{"恢复终端连接测试", false},
+		{"在终端恢复连接测试", false},
+		{"ターミナルで再開せず新規エージェントを起動", false},
+		{"ターミナル設定を戻してビルドを再開", false},
+	} {
+		if got := terminalResumeLabel(tc.label); got != tc.manual {
+			t.Errorf("terminalResumeLabel(%q) = %v, want %v", tc.label, got, tc.manual)
+		}
+	}
+}
+
+func TestTerminalResumeLegacyBindingInEveryLanguage(t *testing.T) {
+	now := time.Now()
+	task := Todo{Agents: []TodoAgent{{MachineID: "box", SessionID: "workerid-original"}}}
+	for _, label := range []string{"Resume Agent workerid on its terminal page", "在终端上恢复 Agent workerid", "ターミナルでエージェント workerid を再開"} {
+		if ref := decisionTerminal(task, label, now); ref == nil || ref.SessionID != task.Agents[0].SessionID {
+			t.Errorf("no link to the session named by %q: %+v", label, ref)
+		}
+	}
+	task.Agents[0].SessionID = "deadbeef-original"
+	for _, label := range []string{"Resume deadbeef on its terminal page", "在终端恢复 deadbeef", "ターミナルで deadbeef を再開"} {
+		if ref := decisionTerminal(task, label, now); ref == nil || ref.SessionID != task.Agents[0].SessionID {
+			t.Errorf("no link to the session named by %q: %+v", label, ref)
+		}
+	}
+}
+
 func TestTerminalResumeTextAnswerKeepsDecisionOpen(t *testing.T) {
 	st := todoTestDB(t)
 	s, f, todo := newDecisionAnswerServiceOn(t, st)
@@ -24,15 +77,28 @@ func TestTerminalResumeTextAnswerKeepsDecisionOpen(t *testing.T) {
 	if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
 		t.Fatal(err)
 	}
-	setLegacyResumeOption(s, todo.ID, 1, legacyTerminalOption)
 	a := askOf(s, todo.ID)
 	round := a.AskedAt.Format(timeKeyLayout)
 	calls := f.callCount()
-	if result, err := s.answerDecisionText(t.Context(), todo.ID, round, legacyTerminalOption); result.taken || !manualResumeRefused(err) {
-		t.Fatalf("text answer: %+v, %v", result, err)
-	}
-	if _, err := s.routeDecisionAnswer(t.Context(), todo.Origin, todo.ID, round, legacyTerminalOption); !manualResumeRefused(err) {
-		t.Fatalf("routed answer: %v", err)
+	for _, label := range []string{legacyTerminalOption, "在终端点 Resume", "ターミナルで Resume を押す"} {
+		setLegacyResumeOption(s, todo.ID, 1, label)
+		reply := strings.ToLower(label) + "。"
+		answer, _ := json.Marshal(map[string]string{"text": reply})
+		web := answerTodoAsk(s, todo.ID, askDecisionPrefix+round, string(answer))
+		var refused struct{ Code, Delivered string }
+		if err := json.Unmarshal(web.Body.Bytes(), &refused); err != nil || refused.Code != "accept_not_taken" || refused.Delivered != "none" {
+			t.Fatalf("to-do answer %q: %d %s", reply, web.Code, web.Body.String())
+		}
+		if _, err := s.routeDecisionAnswer(t.Context(), todo.Origin, todo.ID, round, reply); !manualResumeRefused(err) {
+			t.Fatalf("routed answer %q: %v", reply, err)
+		}
+		body, _ := json.Marshal(batchDecisionRequest{Items: []batchDecisionItem{{TodoID: todo.ID, Reply: reply}}})
+		w := batchDecisionsRequest(s, "full", string(body))
+		var batch batchDecisionResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &batch); err != nil || batch.Failed != 1 || len(batch.Results) != 1 ||
+			batch.Results[0].Error != i18n.T(s.requestCtxLang(t.Context()), "assistant-reports.manual_terminal_resume") {
+			t.Fatalf("batch reply %q: %d %s", reply, w.Code, w.Body.String())
+		}
 	}
 	if got := askOf(s, todo.ID); !got.AcceptedAt.IsZero() || !got.DueAt.IsZero() || f.callCount() != calls {
 		t.Fatalf("text answer changed the decision or reached a device: %+v", got)
@@ -71,9 +137,69 @@ func TestTerminalResumeFeishuRepliesKeepDecisionOpen(t *testing.T) {
 			t.Fatalf("reply %q: missing manual-resume explanation: %v", msg.reply, after)
 		}
 	}
+	// Without a question mark in the displayed label, asking about it is a question for the supervisor.
+	setLegacyResumeOption(s, todo.ID, 0, legacyTerminalOption)
+	feishuSay(t, s, f, nil, p2pText("om_question", label, "", a.MessageID), "")
+	if got := sendOnceText(f); !strings.Contains(got, label) || !askOf(s, todo.ID).AcceptedAt.IsZero() {
+		t.Fatalf("a genuine question did not reach the supervisor with the decision open: %q", got)
+	}
+	setLegacyResumeOption(s, todo.ID, 0, label)
 	// An already delivered choice records the owner's actual words without a second send.
 	if taken, err := s.decisionTold(t.Context(), todo.ID, label, "box", "conv1", label); err != nil || !taken || len(sentToAgent(f)) != sent {
 		t.Fatalf("already relayed choice: taken %v, error %v", taken, err)
+	}
+}
+
+func TestTerminalResumeFeishuReplyQueuedBehindSettlement(t *testing.T) {
+	needsLarkLayer(t)
+	for _, state := range []string{"superseded", "closed", "recheck", "returned"} {
+		t.Run(state, func(t *testing.T) {
+			s, f, todo, _, notes := conclusionService(t, false)
+			waitsForReview(t, s, f, todo.ID, "Choose the next step.")
+			if _, err := reviewErr(s, todo.ID, rolloutDecision()); err != nil {
+				t.Fatal(err)
+			}
+			setLegacyResumeOption(s, todo.ID, 0, legacyTerminalOption)
+			a := askOf(s, todo.ID)
+			before := len(notes())
+			recognized := make(chan bool, 1)
+			func() {
+				actions := &s.reviewDismissals.actions
+				actions.acquire(todo.ID)
+				defer actions.release(todo.ID)
+				go func() {
+					recognized <- s.acceptReply(t.Context(), "om_racing", legacyTerminalOption, false, a.MessageID)
+				}()
+				waitFor(t, "Feishu reply waiting for the task lock", func() bool { return actions.waiting(todo.ID) == 2 })
+				at := time.Now().UTC()
+				switch state {
+				case "superseded":
+					s.supersedeDecision(t.Context(), todo.ID, "Already settled.")
+				case "closed":
+					s.todos.mu.Lock()
+					s.todos.todos[todo.ID].DoneAt = &at
+					s.todos.mu.Unlock()
+				case "recheck":
+					s.accept.mu.Lock()
+					s.accept.asks[todo.ID].RecheckAt = at
+					s.accept.mu.Unlock()
+				case "returned":
+					s.todos.mu.Lock()
+					reviews := s.todos.todos[todo.ID].Supervision.Reviews
+					reviews[len(reviews)-1].RecheckAt = at
+					s.todos.mu.Unlock()
+				}
+			}()
+			select {
+			case got := <-recognized:
+				after := notes()
+				if !got || len(after) != before+1 || after[before] != i18n.T(s.botLang(t.Context()), "assistant-feishu_cards.already_handled") {
+					t.Fatalf("expected an already-handled reply: recognized=%v notes=%v", got, after)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("reply did not finish after the competing action")
+			}
+		})
 	}
 }
 

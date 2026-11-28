@@ -150,12 +150,11 @@ func acceptCardDue(a *acceptAsk) bool {
 }
 
 type acceptBook struct {
-	mu             sync.Mutex
-	writing        sync.Mutex // serializes outside raises and their caller refs
-	loaded         bool
-	asks           map[string]*acceptAsk       // by todo id
-	outside        map[string]*outsideDecision // by outside decision id
-	refusedResumes map[resumeAttempt]time.Time // pending owner-only refusals, until the next decision on the Agent's task
+	mu      sync.Mutex
+	writing sync.Mutex // serializes outside raises and their caller refs
+	loaded  bool
+	asks    map[string]*acceptAsk       // by todo id
+	outside map[string]*outsideDecision // by outside decision id
 }
 
 // loadAcceptLocked reads the asks once and reports whether they are in memory; s.accept.mu is held. A failed read

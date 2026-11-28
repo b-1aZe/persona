@@ -55,7 +55,15 @@ func stoppedRefusal(c proto.Session) error {
 
 // resumeAllowed checks a resume before anything is asked or started: a reason, the computer reachable, room left in
 // the agent's context, and a task of self's it will be on (one it is on, or task, which the send's checks go on with).
-func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c proto.Session, why string, task *sendTask) error {
+func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c proto.Session, why string, task *sendTask, reviewer string) error {
+	// Background forwarding uses the same resume policy, but only the supervisor making an interactive attempt
+	// can offer its terminal in a later decision. Register before the archive lookup so a live update wins.
+	ownerOnly := false
+	if reviewer != "" && s.ensureTodosLoaded(ctx) == nil {
+		if attempt, evidence := s.todos.beginResumeAttempt(reviewer, am.ID, c); evidence != nil {
+			defer func() { s.todos.finishResumeAttempt(attempt, evidence, ownerOnly) }()
+		}
+	}
 	cause := proto.StopUnknown
 	if c.Capabilities != nil {
 		cause = c.Capabilities.StopCause
@@ -78,11 +86,7 @@ func (s *Service) resumeAllowed(ctx context.Context, self string, am Device, c p
 	// it was the user's (or the assistant's own close, which records its cause).
 	oldNode := c.Capabilities == nil && !c.Archived
 	ownerOnlyStop := c.Archived && !cause.AllowsSupervisorResume() || !cause.SupervisorMayResume()
-	reviewer, _ := ctx.Value(reworkReviewerKey{}).(string)
-	if reviewer == "" {
-		reviewer = self
-	}
-	s.accept.noteResumeAttempt(resumeAttempt{reviewer: reviewer, agent: SessionRef{MachineID: am.ID, SessionID: c.SessionID}}, oldNode || ownerOnlyStop)
+	ownerOnly = oldNode || ownerOnlyStop
 	if oldNode {
 		return fmt.Errorf("%s cannot be resumed by the assistant: its computer's node reports no stop cause (too old). "+
 			"The user's Resume on its terminal page can. Nothing was started or sent", agentLabel(c))

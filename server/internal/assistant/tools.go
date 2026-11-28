@@ -508,7 +508,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 				}
 				resumeTodo = todo.ID
 			}
-			if err := s.resumeAllowed(ctx, self, am, c, resume, a.Task); err != nil {
+			if err := s.resumeAllowed(ctx, self, am, c, resume, a.Task, self); err != nil {
 				if resumeTodo != "" {
 					s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
 				}

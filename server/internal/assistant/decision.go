@@ -13,6 +13,7 @@ import (
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/i18n"
+	"github.com/nwverse/persona/server/internal/lazyre"
 	"github.com/nwverse/persona/server/internal/prompts"
 )
 
@@ -74,13 +75,35 @@ type DecisionOption struct {
 	LeadsTo string `json:"leads_to"`
 }
 
-// terminalResumeLabel recognizes the existing terminal instruction in the three
-// supported languages. It can only offer navigation; it never authorizes a start.
+// Legacy terminal controls use either the action followed by its location or the terminal followed
+// by its Resume control. Match a complete instruction so an alternative, negation, or a different
+// operation (such as resuming a build) remains an executable decision option.
+const (
+	// Session identifiers may be printed without "Agent". A bare ordinary word, e.g. "debugging",
+	// is not an identifier; an all-letter name still qualifies when the label explicitly names an Agent.
+	bareTerminalID  = `(?:[a-f0-9]{8,}|[a-z0-9_-]*[0-9_-][a-z0-9_-]*)`
+	namedTerminalID = `[a-z0-9_-]+`
+	englishTarget   = `(?:(?:the |this )?(?:stopped )?(?:agent|session)(?: ` + namedTerminalID + `)?|it|` + bareTerminalID + `)`
+	englishTerminal = `(?:(?:its|the|the agent['’]s) )?terminal(?: page)?`
+	zhTarget        = `(?:(?:agent|会话)(?:\s+` + namedTerminalID + `)?|它|` + bareTerminalID + `)`         // i18n-ignore: stored option target
+	jaTarget        = `(?:(?:エージェント|セッション|agent)(?:\s+` + namedTerminalID + `)?|` + bareTerminalID + `)` // i18n-ignore: stored option target
+)
+
+var (
+	resumeInTerminal   = lazyre.New(`^(?:manually )?resume(?: ` + englishTarget + `)? (?:on|in|from|via) ` + englishTerminal + `$`)
+	terminalThenResume = lazyre.New(`^(?:open ` + englishTerminal + ` (?:and|to) (?:click |press |use )?|use ` + englishTerminal + ` )resume(?: ` + englishTarget + `| there)?$`)
+
+	resumeInChineseTerminal = lazyre.New(`^(?:(?:在|从|打开)\s*(?:agent\s*的\s*)?)?终端(?:页面|页)?(?:上|里|中)?\s*` + // i18n-ignore: stored terminal label
+		`并?(?:手动|点击?|选择)?\s*[「“]?(?:恢复|resume)[」”]?(?:\s*` + zhTarget + `)?$`) // i18n-ignore: stored resume control
+
+	resumeInJapaneseTerminal = lazyre.New(`^(?:エージェントの)?ターミナル(?:画面|ページ)?(?:で|から|を開いて)\s*(?:` + jaTarget + `\s*を\s*)?` + // i18n-ignore: stored terminal label
+		`[「“]?(?:再開|resume)[」”]?(?:する|してください|\s*を(?:押す|選択|選んでください))?$`) // i18n-ignore: stored resume control
+)
+
 func terminalResumeLabel(label string) bool {
-	label = strings.ToLower(strings.TrimSpace(label))
-	return strings.HasPrefix(label, "resume ") && strings.Contains(label, "terminal") ||
-		strings.Contains(label, "终端") && strings.Contains(label, "恢复") || // i18n-ignore: matches the terminal-resume instruction as written in zh-Hans / ja, never shown
-		strings.Contains(label, "ターミナル") && strings.Contains(label, "再開") // i18n-ignore: matches the terminal-resume instruction as written in zh-Hans / ja, never shown
+	label = strings.ToLower(optionAnswerText(label))
+	return resumeInTerminal.MatchString(label) || terminalThenResume.MatchString(label) ||
+		resumeInChineseTerminal.MatchString(label) || resumeInJapaneseTerminal.MatchString(label)
 }
 
 // decisionTerminal returns a task-owned target. An archived/released binding is
@@ -492,12 +515,19 @@ func (s *Service) answerDecisionText(ctx context.Context, id, asked, text string
 	return result, err
 }
 
-// A text answer can repeat a legacy manual control verbatim. Only match a choice on this decision:
-// ordinary feedback may also mention resuming in a terminal.
+// optionAnswerText preserves the words and internal punctuation (including session identifiers).
+// Case, spacing and a final sentence stop do not change which complete choice the owner repeated.
+func optionAnswerText(text string) string {
+	return strings.Join(strings.Fields(strings.TrimRight(strings.TrimSpace(text), ".!?。！？")), " ") // i18n-ignore: matches sentence punctuation
+}
+
 func (a *acceptAsk) manualTerminalAnswer(text string) bool {
-	text = strings.TrimSpace(text)
-	return decideAsk(a) && a.OutsideID == "" && terminalResumeLabel(text) &&
-		(text == a.Recommend || slices.ContainsFunc(a.Options, func(o DecisionOption) bool { return text == o.Label }))
+	if !decideAsk(a) || a.OutsideID != "" || !terminalResumeLabel(text) {
+		return false
+	}
+	answer := optionAnswerText(text)
+	matches := func(label string) bool { return strings.EqualFold(answer, optionAnswerText(label)) }
+	return matches(a.Recommend) || slices.ContainsFunc(a.Options, func(o DecisionOption) bool { return matches(o.Label) })
 }
 
 // answerDecisionTextLocked answers task t's decision with text, its caller holding t's action lock: relayed to its

@@ -1268,7 +1268,8 @@ func (s *Service) resumeStoppedTaskAgent(ctx context.Context, t Todo, c proto.Se
 	if !ok {
 		return "", errors.New("its machine is offline")
 	}
-	if err := s.resumeAllowed(ctx, t.Origin, am, c, "rework of this task", nil); err != nil {
+	reviewer, _ := ctx.Value(reworkReviewerKey{}).(string)
+	if err := s.resumeAllowed(ctx, t.Origin, am, c, "rework of this task", nil, reviewer); err != nil {
 		return "", err
 	}
 	return s.resumeAndSend(ctx, t.Origin, am, c, map[string]any{"text": text}, "rework of this task", text, "", nil)

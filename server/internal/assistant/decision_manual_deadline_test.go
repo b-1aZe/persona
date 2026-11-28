@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/assistantwire"
+	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/i18n"
 )
 
@@ -36,6 +38,22 @@ func TestLegacyTerminalResumeDecisionRemindedOnceAtDeadline(t *testing.T) {
 			e.f.hello.Locale = tc.lang
 			e.f.mu.Unlock()
 			a.Recommend, a.Options[0].Label = tc.label, tc.label
+			a.WhyOwner = whyPriority
+			l := e.s.lang(t.Context())
+			loc := e.s.location(t.Context())
+			a.Deadline = time.Now().UTC().Add(time.Hour)
+			if row := e.s.todoAsks(t.Context())["task"]; row.Risk != assistantwire.OwnerAskRiskOpen || row.Default != defaultNever {
+				t.Fatalf("manual recommendation before deadline: risk %q, default %q", row.Risk, row.Default)
+			}
+			if !e.s.pushDecision(t.Context(), "task") {
+				t.Fatal("missing initial decision push")
+			}
+			initial := e.f.pushed()[0]
+			before := i18n.T(l, "assistant-reports.deadline_manual_resume", i18n.Args{"when": a.Deadline.In(loc).Format("01-02 15:04")})
+			if initial.Todo.Lockscreen != assistantwire.OwnerAskLockscreenOpenOnly || !strings.Contains(initial.Body, before) {
+				t.Fatalf("initial push: lockscreen %q, body %q", initial.Todo.Lockscreen, initial.Body)
+			}
+			a.Deadline = at
 			if row := e.s.todoAsks(t.Context())["task"]; row.Default != defaultNever {
 				t.Errorf("manual recommendation advertised as default %q", row.Default)
 			}
@@ -47,13 +65,12 @@ func TestLegacyTerminalResumeDecisionRemindedOnceAtDeadline(t *testing.T) {
 				t.Errorf("deadline not handled as a reminder: %+v", cur)
 			}
 			pushes := e.f.pushed()
-			if len(pushes) != 1 {
-				t.Fatalf("%d decision pushes for 3 sweeps, want 1", len(pushes))
+			if len(pushes) != 2 {
+				t.Fatalf("%d decision pushes for 3 sweeps, want 1", len(pushes)-1)
 			}
-			l := e.s.lang(t.Context())
-			want := i18n.T(l, "assistant-reports.deadline_manual_resume", i18n.Args{"when": a.Deadline.In(e.s.location(t.Context())).Format("01-02 15:04")})
-			if !strings.Contains(pushes[0].Body, want) {
-				t.Fatalf("missing manual reminder %q in %q", want, pushes[0].Body)
+			want := i18n.T(l, "assistant-reports.deadline_manual_resume_overdue", i18n.Args{"when": a.Deadline.In(loc).Format("01-02 15:04")})
+			if !strings.Contains(pushes[1].Body, want) {
+				t.Fatalf("missing manual reminder %q in %q", want, pushes[1].Body)
 			}
 		})
 	}
@@ -145,5 +162,101 @@ func TestTerminalResumeDeadlineRespectsDismissalAndRecheck(t *testing.T) {
 				t.Fatalf("handled a quiet deadline: pushes %d, handled at %v", got, a.DueAt)
 			}
 		})
+	}
+}
+
+func TestTerminalResumeDeadlineLoadsTasksBeforeRecordingReminder(t *testing.T) {
+	ctx := t.Context()
+	now := time.Now().UTC()
+	st := &failingStore{DB: todoTestDB(t)}
+	const id = "task"
+	if err := st.CreateTodo(ctx, db.TodoRow{ID: id, Title: "Resume the task", Origin: "conv", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTodoSupervision(ctx, db.TodoSupervisionRow{TodoID: id, Supervisor: "conv", State: reviewNeedsUser, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	asks := map[string]acceptAsk{id: {
+		Conclusion: true, Outcome: outcomeDecide, Recommend: legacyTerminalOption, Reversible: true,
+		AskedAt: now.Add(-time.Hour), Deadline: now.Add(-time.Minute),
+	}}
+	if err := st.PutSetting(ctx, acceptanceKey, asks); err != nil {
+		t.Fatal(err)
+	}
+	st.failLoad.Store(true)
+	e := newTodoEnv(t, st)
+	e.s.sweepTaskDeadlines(now)
+	var saved map[string]acceptAsk
+	if found, err := st.Setting(ctx, acceptanceKey, &saved); err != nil || !found || !saved[id].DueAt.IsZero() || deadlinePushes(e.f, id) != 0 {
+		t.Fatalf("unreadable tasks consumed the reminder: ask %+v, found %v, error %v", saved[id], found, err)
+	}
+
+	st.failLoad.Store(false)
+	for range 2 {
+		e.s.sweepTaskDeadlines(now)
+	}
+	if found, err := st.Setting(ctx, acceptanceKey, &saved); err != nil || !found || saved[id].DueAt.IsZero() || deadlinePushes(e.f, id) != 1 {
+		t.Fatalf("after reload: ask %+v, pushes %d, found %v, error %v", saved[id], deadlinePushes(e.f, id), found, err)
+	}
+}
+
+func TestTerminalResumeDeadlineRechecksTaskBeforeReminder(t *testing.T) {
+	for _, state := range []string{"closed", "reopened", "deleted", "returned", "legacy park", "agent reply"} {
+		t.Run(state, func(t *testing.T) {
+			now := time.Now().UTC()
+			e := dismissalEnv(t, &memStore{}, now.Add(-time.Hour), true)
+			e.s.todos.todos["task"].Origin = "conv"
+			a := e.s.accept.asks["task"]
+			a.Recommend, a.Options[0].Label = legacyTerminalOption, legacyTerminalOption
+			changed := false
+			e.s.deadlineDefaultHook = func(id string) {
+				changed = true
+				switch state {
+				case "closed", "reopened":
+					done := state == "closed"
+					if _, err := e.s.editTodo(t.Context(), id, db.TodoEdit{Done: &done, RestartWork: !done}); err != nil {
+						t.Fatal(err)
+					}
+				case "deleted":
+					e.s.todos.mu.Lock()
+					delete(e.s.todos.todos, id)
+					e.s.todos.mu.Unlock()
+				case "returned", "legacy park":
+					e.s.todos.mu.Lock()
+					r := &e.s.todos.todos[id].Supervision.Reviews[0]
+					if state == "returned" {
+						r.RecheckAt = now
+					} else {
+						r.Verdict, r.WaitingOn = reviewParked, parkOwnerPriority
+					}
+					e.s.todos.mu.Unlock()
+				case "agent reply":
+					e.s.accept.mu.Lock()
+					a.AgentReply = &decisionAgentReply{At: now}
+					e.s.accept.mu.Unlock()
+				}
+			}
+			e.s.sweepTaskDeadlines(now)
+			if !changed || !a.DueAt.IsZero() || deadlinePushes(e.f, "task") != 0 {
+				t.Fatalf("task changed %v, handled at %v, overdue pushes %d", changed, a.DueAt, deadlinePushes(e.f, "task"))
+			}
+		})
+	}
+}
+
+func TestTerminalResumeDeadlineOnOutsideDecisionReturnsChoiceToSource(t *testing.T) {
+	e := newTodoEnv(t, nil)
+	in := outsideFixture()
+	in.Recommend, in.Options[1].Label = legacyTerminalOption, legacyTerminalOption
+	d := raiseOutside(t, e, "release-script", in)
+	pastDeadline(t, e.s, d.AskTodoID)
+	pushes := deadlinePushes(e.f, d.AskTodoID)
+	e.s.sweepTaskDeadlines(time.Now())
+	got := pollOutside(t, e, "release-script", d.ID)
+	if got.Answer == nil || got.Answer.Option != legacyTerminalOption || got.Answer.AnsweredBy != assistantwire.OutsideAnswerDefault {
+		t.Fatalf("outside default did not reach its caller: %+v", got)
+	}
+	if n := deadlinePushes(e.f, d.AskTodoID) - pushes; n != 0 {
+		t.Fatalf("outside default generated %d reminders", n)
 	}
 }

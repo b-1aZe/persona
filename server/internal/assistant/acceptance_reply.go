@@ -33,10 +33,14 @@ func (s *Service) conclusionQuestion(ctx context.Context, ev *botcard.MessageEve
 	}
 	ask, _ := s.askCopy(id)
 	text := strings.TrimSpace(content.Text)
-	if !ask.Conclusion || text == "" || ask.manualTerminalAnswer(text) { // acceptReply refuses an exact terminal option, including its punctuation
+	if !ask.Conclusion || text == "" {
 		return false
 	}
-	if !strings.ContainsAny(text, "?？") { // i18n-ignore: question marks in the owner's reply, never shown
+	question := strings.ContainsAny(text, "?？") // i18n-ignore: question marks in the owner's reply, never shown
+	if ask.manualTerminalAnswer(text) && (!question || text == ask.Recommend || slices.ContainsFunc(ask.Options, func(o DecisionOption) bool { return o.Label == text })) {
+		return false // acceptReply refuses the option; a question must repeat the displayed label verbatim
+	}
+	if !question {
 		if passWords.MatchString(text) && (!decideAsk(&ask) || ask.Recommend != "") {
 			return false
 		}
@@ -158,12 +162,14 @@ func (s *Service) acceptReply(ctx context.Context, messageID, text string, media
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-reports.accept_gone"))
 		return true
 	}
-	if a, _ := s.acceptAskLocked(id); a == nil || !a.AskedAt.Equal(ask.AskedAt) || acceptAskStale(a, t) {
+	current, present := s.askCopy(id)
+	if !present || !current.AskedAt.Equal(ask.AskedAt) || acceptAskStale(&current, t) ||
+		decideAsk(&current) && (!current.AcceptedAt.IsZero() || acceptAskEnded(&current, t) || !current.RecheckAt.IsZero() || ownerDecisionReturned(t.Supervision)) {
 		s.reviewDismissals.actions.release(id)
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-feishu_cards.already_handled"))
 		return true
 	}
-	if ask.manualTerminalAnswer(text) {
+	if current.manualTerminalAnswer(text) {
 		s.reviewDismissals.actions.release(id)
 		s.chat().Note(ctx, larkhost.Target{}, messageID, i18n.T(l, "assistant-reports.manual_terminal_resume"))
 		return true

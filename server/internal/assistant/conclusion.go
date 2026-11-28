@@ -293,10 +293,6 @@ func (s *Service) askConclusion(ctx context.Context, t Todo, in conclusionInput)
 		}
 		earlier = lastOf(slices.Concat(old.Earlier, old.Messages), acceptEarlierMost)
 	}
-	var terminal *SessionRef
-	if in.Outcome == outcomeDecide {
-		terminal = b.takeResumeTerminalLocked(t, in.Reviewer, time.Now())
-	}
 	b.asks[t.ID] = &acceptAsk{Earlier: earlier} // claimed, as askAcceptance does
 	b.mu.Unlock()
 	l := s.botLang(ctx)
@@ -311,7 +307,9 @@ func (s *Service) askConclusion(ctx context.Context, t Todo, in conclusionInput)
 		a.Deadline, a.Reversible = in.Deadline, in.Reversible
 	}
 	if in.Outcome == outcomeDecide {
-		a.ResumeTerminal = terminal
+		if in.Check == "" && in.Reviewer != "" {
+			a.ResumeTerminal = s.todos.takeResumeTerminal(t.ID, in.Reviewer, a.AskedAt)
+		}
 		a.WhyOwner, a.Options, a.CostOfWaiting = in.Decision.WhyOwner, in.Decision.Options, in.Decision.CostOfWaiting
 		a.From, a.Stands = s.decisionBackground(ctx, t) // the hub's, not the model's: where it came from, where it stands
 		a.ForBriefing, a.Check = in.ForBriefing, in.Check

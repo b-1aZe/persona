@@ -183,7 +183,8 @@ func (s *Service) todoAsks(ctx context.Context) map[string]todoAsk {
 					}
 					if ref := w.ask.ResumeTerminal; a.Terminal == nil && ref != nil {
 						if ag, bound := findActiveLinkedAgent(task, ref.MachineID, ref.SessionID); bound && !ag.LinkedAt.After(w.ask.AskedAt) {
-							a.Terminal = ref
+							target := *ref
+							a.Terminal = &target
 						}
 					}
 				}
@@ -212,12 +213,11 @@ func (s *Service) todoAsks(ctx context.Context) map[string]todoAsk {
 	return out
 }
 
-// askRisk is how risky answering ask a is (assistantwire.OwnerAskRisk): open when it cannot be undone or other people
-// will see it (cannotUndo, from its raw deadline, which the list stops showing once the deadline was handled), else
-// safe. The list's ask carries it and the view's decision reads it from there (todo/projection), so whatever answers a
+// askRisk is open when answering requires the owner's terminal, cannot be undone, or is visible to others.
+// cannotUndo uses the raw deadline, including after the list stops showing it. The list's ask carries it and the view's decision reads it from there (todo/projection), so whatever answers a
 // decision, a row or a push about it, can keep this one rule.
 func askRisk(a *acceptAsk) string {
-	if a.OutsideID != "" && !a.Reversible || cannotUndo(a.WhyOwner, a.Deadline, a.Reversible) {
+	if a.manualTerminalRecommendation() || a.OutsideID != "" && !a.Reversible || cannotUndo(a.WhyOwner, a.Deadline, a.Reversible) {
 		return assistantwire.OwnerAskRiskOpen
 	}
 	return assistantwire.OwnerAskRiskSafe

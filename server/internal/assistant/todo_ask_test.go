@@ -530,6 +530,8 @@ func TestAskRisk(t *testing.T) {
 			assistantwire.OwnerAskRiskOpen},
 		{"that deadline handled", acceptAsk{Outcome: outcomeDecide, WhyOwner: whyPriority, Deadline: deadline,
 			DueAt: deadline}, assistantwire.OwnerAskRiskOpen},
+		{"outside source can take its own recommendation", acceptAsk{OutsideID: "source", Conclusion: true, Outcome: outcomeDecide,
+			Recommend: legacyTerminalOption, Reversible: true}, assistantwire.OwnerAskRiskSafe},
 		{"a Please verify", acceptAsk{}, assistantwire.OwnerAskRiskSafe},
 	} {
 		if got := askRisk(&tc.a); got != tc.want {
@@ -606,8 +608,8 @@ func TestTodoFixturesListTheManagersRisk(t *testing.T) {
 		Risk      string     `json:"risk"`
 	}
 	// fixtureAsk is an acceptance ask todoAsks lists as l, and whether l says enough to tell its risk: a listed
-	// deadline taken by default can be undone, one never taken though it recommends an option cannot (todoAsks lists
-	// that only then), and with neither a deadline nor a default it had none. A deadline listed without its default (a
+	// decision with a deadline and a recommendation is open when the manager says its default is never taken.
+	// With neither a deadline nor a default it had none. A deadline listed without its default (a
 	// fixture's shorthand), or a default of never alone (a handled deadline, or no recommendation), could be either.
 	fixtureAsk := func(l listed) (acceptAsk, bool) {
 		a := acceptAsk{Outcome: l.Outcome, WhyOwner: l.WhyOwner}
