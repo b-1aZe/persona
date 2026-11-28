@@ -466,3 +466,51 @@ func TestRuntimeCommandInputStartMustConfirmRequestedSession(t *testing.T) {
 		t.Fatal("a different returned session authorized the requested session")
 	}
 }
+
+func TestRuntimeCommandInputUnknownThenRefusedRetry(t *testing.T) {
+	n, _ := runtimeNode(t)
+	rt := startInputRuntime(t, n, "toy")
+	pushInputWait(t, rt, "one")
+	card := nextInputCard(t, n, "")
+	rt.mu.Lock()
+	rt.answer = func(string, json.RawMessage) (any, error) { return nil, errors.New("no confirmation") }
+	rt.mu.Unlock()
+	if err := answerRuntimeCard(t, n, card, true, "first"); refusalCode(err) != codeCommandInputUnconfirmed {
+		t.Fatalf("first delivery: %v", err)
+	}
+	if err := answerRuntimeCard(t, n, card, true, "invalid\nline"); refusalCode(err) != codeCommandInputLine {
+		t.Fatalf("rejected retry: %v", err)
+	}
+	_ = rt.conn.Close()
+	waitFor(t, "disconnected", func() bool { return n.runtimes.ownerOf(card.SessionID) == nil })
+	again := inputRuntime(t, n, "toy", true)
+	again.binding = rt.binding
+	pushInputRevision(t, n, again, 1, "working", "one")
+	if len(n.runtimes.inputCards()) != 0 {
+		t.Fatal("a rejected retry erased the uncertain first delivery")
+	}
+}
+
+func TestRuntimeCommandInputQuietReconnectPreservesBinding(t *testing.T) {
+	n, _ := runtimeNode(t)
+	rt := startInputRuntime(t, n, "toy")
+	pushInputWait(t, rt, "before")
+	card := nextInputCard(t, n, "")
+	_ = rt.conn.Close()
+	waitFor(t, "disconnected", func() bool { return n.runtimes.ownerOf(card.SessionID) == nil })
+	again := inputRuntime(t, n, "toy", true)
+	again.binding = rt.binding
+	if err := again.peer.Notify("runtime.sessions", map[string]any{"sessions": []any{map[string]any{"session_id": card.SessionID}}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "quiet inventory", func() bool { return n.runtimes.ownerOf(card.SessionID) != nil })
+	b := n.runtimes
+	b.mu.Lock()
+	b.inputBindings[card.SessionID].seen = time.Now().Add(-2 * agyInputMaxAge)
+	b.mu.Unlock()
+	if len(b.inputCards()) != 0 {
+		t.Fatal("quiet reconnect produced a card")
+	}
+	pushInputWait(t, again, "after")
+	nextInputCard(t, n, card.ID)
+}

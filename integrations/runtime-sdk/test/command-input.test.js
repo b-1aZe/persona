@@ -307,3 +307,21 @@ test('reconnecting to an old node drops previously negotiated input', async t =>
   assert.deepEqual(node.last('runtime.sessions').sessions, [{ session_id: params.session_id }])
   await assert.rejects(node.input(params), refused('command_input_unreachable'))
 })
+
+test('a start received during hello keeps its binding after negotiation', async t => {
+  const { node, runtime } = await connect(t, { input: () => ({ typed: true }) })
+  const handshake = Promise.withResolvers()
+  node.holdHello = handshake.promise
+  node.peer.close()
+  await until('next hello pending', () => node.hellos === 2)
+  assert.equal(runtime.ready, false)
+  const connecting = [...node.peers].find(p => !p.closed)
+  const binding = randomUUID()
+  const start = connecting.call('session.start', { session_id: params.session_id, input_binding: binding })
+  // The unwatch reply proves the preceding start request arrived before hello completed.
+  await connecting.call('session.unwatch', params)
+  handshake.resolve()
+  await start
+  await until('wait bound after hello', () => node.last('runtime.sessions')?.sessions[0]?.input_binding === binding)
+  assert.deepEqual(await node.input(params), { typed: true })
+})

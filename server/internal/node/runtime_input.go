@@ -31,7 +31,6 @@ type runtimeInputReport struct {
 type runtimeInputBinding struct {
 	runtime, proof string
 	confirmed      bool
-	serial         int
 	seen           time.Time
 }
 type runtimeInputOccurrence struct {
@@ -57,7 +56,7 @@ func (b *runtimeRegistry) beginInputStart(h *runtimeConn, session string) *runti
 	if b.inputBindings == nil {
 		b.inputBindings = make(map[string]*runtimeInputBinding)
 	}
-	grant := &runtimeInputBinding{runtime: h.id(), proof: rand.Text(), serial: h.serial, seen: time.Now()}
+	grant := &runtimeInputBinding{runtime: h.id(), proof: rand.Text(), seen: time.Now()}
 	b.inputBindings[session] = grant
 	return grant
 }
@@ -161,7 +160,7 @@ func (b *runtimeRegistry) reconcileInputs(h *runtimeConn, rows []proto.Session, 
 		if source == nil || source.runtime != h.hello.Runtime || subtle.ConstantTimeCompare([]byte(source.proof), []byte(w.binding)) != 1 {
 			continue
 		}
-		source.serial, source.seen = h.serial, now
+		source.seen = now
 		occurrence := runtimeInputOccurrence{source: source, task: key.task, wait: w.WaitID}
 		if prev := h.inputWaits[key]; prev != nil && prev.occurrence == occurrence && prev.display == w.CommandInput && prev.card.Cwd == s.Cwd {
 			next[key] = prev
@@ -180,7 +179,9 @@ func (b *runtimeRegistry) inputCards() []proto.Interaction {
 	defer b.mu.Unlock()
 	now := time.Now()
 	for session, source := range b.inputBindings {
-		if h := b.owner[session]; h != nil && h.serial == source.serial {
+		// A quiet session sends no proof until its next wait. Its listed owner
+		// keeps the record alive, but only the original proof can authorize a card.
+		if h := b.owner[session]; h != nil && h.id() == source.runtime {
 			source.seen = now
 		}
 		if now.Sub(source.seen) > agyInputMaxAge {
@@ -248,7 +249,7 @@ func (b *runtimeRegistry) claimInput(session, id string) (*runtimeConn, *runtime
 				if b.inputClaims == nil {
 					b.inputClaims = make(map[runtimeInputOccurrence]runtimeInputClaim)
 				}
-				b.inputClaims[w.occurrence] = runtimeInputClaim{}
+				b.inputClaims[w.occurrence] = runtimeInputClaim{retryOn: b.inputClaims[w.occurrence].retryOn}
 				return h, w, nil
 			}
 		}
@@ -268,6 +269,10 @@ func (n *Node) runtimeInputAnswer(ctx context.Context, session, id string, r pro
 	retryOn := 0
 	defer func() {
 		n.runtimes.mu.Lock()
+		// A refusal before writing cannot settle an earlier unknown delivery.
+		if !ended && retryOn == 0 {
+			retryOn = n.runtimes.inputClaims[w.occurrence].retryOn
+		}
 		if ended || retryOn != 0 {
 			n.runtimes.inputClaims[w.occurrence] = runtimeInputClaim{expiry: time.Now().Add(agyInputMaxAge), retryOn: retryOn}
 		} else {
