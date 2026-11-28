@@ -18,6 +18,7 @@ vi.mock("../../lib/ops", () => ({
   }),
 }));
 import { InteractionCard } from "./Interactions";
+import { ApprovalHostChat } from "./chat-context";
 import { t } from "../../i18n";
 import { Collapse } from "../../ui/atoms";
 import { getState } from "../../lib/store";
@@ -114,6 +115,18 @@ describe("a card answering from the keyboard", () => {
       state.machines = machines;
       history.replaceState(originalState, "", originalURL);
     }
+  });
+
+  it("omits attribution only for the host chat's own request, even when another computer uses the same session ID", () => {
+    const other = { ...permission, id: "remote-bash", machine_id: "studio", session_title: "Release review" };
+    act(() => root.render(
+      <ApprovalHostChat.Provider value={{ mid: permission.machine_id, sid: permission.session_id }}>
+        <InteractionCard ix={permission} />
+        <InteractionCard ix={other} />
+      </ApprovalHostChat.Provider>,
+    ));
+    expect(host.querySelector(`[data-card="${permission.id}"] [data-permission-from]`)).toBeNull();
+    expect(host.querySelector(`[data-card="${other.id}"] [data-permission-from] a`)?.getAttribute("href")).toBe("/s/studio/s?view=chat");
   });
 
   it("keeps the Bash source visibly linked with an expanded hit area outside the truncated text", () => {

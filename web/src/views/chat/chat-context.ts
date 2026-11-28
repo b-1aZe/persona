@@ -10,6 +10,9 @@ import type { Subagent } from "../../lib/types";
 import { NO_WORKFLOW_CALLS, type WorkflowCalls } from "../../lib/workflows";
 import type { WorkLineStyle } from "../../lib/work-groups";
 
+/** The chat displaying an approval, including embedded chats. A standalone request has no host chat. */
+export const ApprovalHostChat = createContext<{ mid: string; sid: string } | null>(null);
+
 export interface ChatContextValue {
   tasks: TaskIndex;
   /** The session's subagents, by the tool_use_id of the call that launched them. */

@@ -47,6 +47,7 @@ import { reportBoundary } from "../../lib/error-reports";
 import { isChunkError } from "../PageBoundary";
 import { useChatCardTapGuard, useChatTapGuardView } from "./card-tap-guard";
 import { decisionKey } from "../../lib/decision-pager";
+import { ApprovalHostChat } from "./chat-context";
 import { DecisionCardContext } from "./decision-card";
 
 /** Answers a card: the chat's cards and the overview's quick answers (Home, #4090) send through this. */
@@ -757,6 +758,7 @@ function BashPermissionCard({ ix: card }: { ix: Interaction }) {
     ? s.interactions.find((other) => other.id === card.mirror_of && (other.manager ?? "") === (card.manager ?? ""))
     : card);
   const ix = original ?? card;
+  const host = useContext(ApprovalHostChat);
   const child = useChildRow(ix.machine_id, ix.session_id);
   const session = useStore(() => getSession(ix.machine_id, ix.session_id)) ?? child;
   const machine = useStore((s) => s.machines.find((m) => m.id === ix.machine_id)?.name);
@@ -775,9 +777,11 @@ function BashPermissionCard({ ix: card }: { ix: Interaction }) {
   const agent = session?.agent_name?.trim() || (engine ? agentName(engine, label) : label);
   const origin = [agent, machine].filter(Boolean).join(" · ") || ix.machine_id;
   const title = ix.session_title?.trim() || (session ? sessionTitle(session) : t("lib-format.untitled_session"));
-  const childLabel = permissionFrom(ix.folded_under ? { ...ix, session_title: ix.session_title?.trim() || session?.title } : ix);
-  const sessionLabel = ix.folded_under ? childLabel : [title, childLabel].filter(Boolean).join(" · ");
-  const sourceLabel = origin ? t("chat-interactions.bash_source", { origin, session: sessionLabel }) : sessionLabel;
+  const sameChat = host?.mid === ix.machine_id && host?.sid === ix.session_id;
+  const childLabel = permissionFrom(ix);
+  const sessionLabel = [title, childLabel].filter(Boolean).join(" · ");
+  const sourceLabel = sameChat || ix.folded_under ? childLabel
+    : origin ? t("chat-interactions.bash_source", { origin, session: sessionLabel }) : sessionLabel;
   const sourceHref = to && href(to);
   return <PermissionCard ix={card} sourceLabel={original ? sourceLabel : card.session_title} sourceHref={sourceHref} onOpenSource={to && (() => {
     const samePage = sourceHref === location.pathname + location.search;

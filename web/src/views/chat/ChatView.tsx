@@ -89,7 +89,7 @@ import { hubSides, isSide, sidesAmong, SESSIONS_SIDE_FOLD_FEATURE } from "../../
 import { doneSideAsk, shownSide, sidesPanelOf, toggleSides, useSideAsk } from "../../lib/side-panel";
 import { RunningStatusBar } from "./RunningStatusBar";
 import { latestPlan, usePlanClosed, usePlanOutOfView } from "./latest-plan";
-import { ChatContext, LiveClockContext, type ChatContextValue } from "./chat-context";
+import { ApprovalHostChat, ChatContext, LiveClockContext, type ChatContextValue } from "./chat-context";
 import { addFreshWords, resetFreshWords } from "./fresh-words";
 import { backgroundCount, backgroundLine, backgroundWaitLine, workflowAgentFor, workflowCalls, workflowCallsKey } from "../../lib/workflows";
 import { backgroundTurn, waitingOnSubagents } from "../../lib/background-work";
@@ -329,7 +329,7 @@ export function ChatView(props: Parameters<typeof ActiveChatView>[0]) {
   if (deleted) return <Suspense fallback={<div className="flex h-full items-center justify-center"><Loading /></div>}>
     <DeletedConversation onToggleSidebar={props.onToggleSidebar} />
   </Suspense>;
-  return <ActiveChatView {...props} />;
+  return <ApprovalHostChat.Provider value={props}><ActiveChatView {...props} /></ApprovalHostChat.Provider>;
 }
 
 function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launching, onToggleSidebar, topCenter, inPage, embedded, panel: chrome, terminalAvailable, banner, offline, mainCache, refreshError, onRefresh, headerActions, landAt: requestedAt, findSource, placeholder: askPlaceholder }: {
