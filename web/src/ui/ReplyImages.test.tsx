@@ -5,6 +5,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ChatActionsContext } from "../views/chat/chat-actions";
+import { t } from "../i18n";
 import { getState } from "../lib/store";
 import { REMOTE_IMAGES_FEATURE } from "../lib/reply-images";
 import { Markdown } from "./Markdown";
@@ -112,6 +114,30 @@ describe("with the hub's remote image route", () => {
     await act(async () => { await import("../views/chat/ImageViewer"); });
     await until(() => (document.body.textContent ?? "").includes("3 / 4"));
     expect(document.body.textContent).toContain("3 / 4");
+  });
+
+  it("offers comments only on readable pictures of a reply in a writable chat", async () => {
+    const chat = { draftKey: "computer/gallery", title: "Gallery", canCompose: true, speaker: "Agent", images: () => [] };
+    const renderChat = async (canCompose: boolean, replyItem?: string) => {
+      await act(async () => root.render(
+        <ChatActionsContext.Provider value={{ ...chat, canCompose }}>
+          <Markdown text={reply} lineBreaks replyItem={replyItem} />
+        </ChatActionsContext.Provider>,
+      ));
+    };
+    const action = () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+      .find((button) => button.textContent === t("chat-comments.comment_image"));
+    await renderChat(false, "reply-2");
+    await until(() => Boolean(host.querySelector("[data-reply-picture]")));
+    await act(async () => host.querySelector<HTMLElement>("[data-reply-picture]")!.click());
+    await until(() => Boolean(document.querySelector('[role="dialog"] img')));
+    expect(action()).toBeUndefined();
+    await renderChat(true);
+    expect(action()).toBeUndefined();
+    await renderChat(true, "reply-2");
+    expect(action()?.disabled).toBe(false);
+    await act(async () => document.querySelector('[role="dialog"] img')!.dispatchEvent(new Event("error")));
+    expect(action()?.disabled).toBe(true);
   });
 
   it("keeps what other people wrote waiting for a click, then loads it through the hub", async () => {

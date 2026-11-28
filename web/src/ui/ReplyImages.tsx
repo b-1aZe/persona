@@ -103,7 +103,7 @@ function picturesOf(node: Element | undefined, allowLocal: boolean): ReplyPictur
 }
 
 export function ReplyImages({ node }: { node?: Element }) {
-  const { text, ask, mid, cwd } = useContext(ReplyPicturesContext);
+  const { text, ask, mid, cwd, replyItem } = useContext(ReplyPicturesContext);
   const allowLocal = Boolean(mid);
   const pictures = picturesOf(node, allowLocal);
   const all = useMemo(() => picturesIn(text, { local: allowLocal }), [text, allowLocal]);
@@ -125,12 +125,13 @@ export function ReplyImages({ node }: { node?: Element }) {
   const gallery = pictures.every((p) => all.some((a) => a.src === p.src)) ? all : pictures;
   const at = (p: ReplyPicture) => Math.max(0, gallery.findIndex((g) => g.src === p.src));
   const viewer: ViewerImage[] = gallery.map((g, i) => {
+    const image = replyItem ? { item: replyItem, src: g.src } : undefined;
     if (g.local && mid) {
       const resolved = resolveLocal(g);
       const name = fileName(resolved);
-      return { id: `${i}:${g.src}`, src: srcFor(g, VIEWER_SIZE), label: g.alt || name, name };
+      return { id: `${i}:${g.src}`, image, src: srcFor(g, VIEWER_SIZE), label: g.alt || name, name };
     }
-    return { id: `${i}:${g.src}`, src: srcFor(g, VIEWER_SIZE), label: [g.alt, hostOf(g.src)].filter(Boolean).join(" · ") };
+    return { id: `${i}:${g.src}`, image, src: srcFor(g, VIEWER_SIZE), label: [g.alt, hostOf(g.src)].filter(Boolean).join(" · ") };
   });
   const waiting = !allLocal && (ask || !through) && !asked;
   return (
@@ -278,6 +279,7 @@ function Tile({
         }}
         title={failed ? `${reason || t("ui-replyimages.retry")} · ${host}` : [picture.alt, host].filter(Boolean).join(" · ")}
         aria-label={failed ? t("ui-replyimages.retry") : picture.alt || t("ui-replyimages.picture")}
+        data-reply-picture-src={picture.src}
         data-reply-picture={failed ? "failed" : state}
         data-local-image={picture.local ? "" : undefined}
         className={tileClass}
@@ -406,6 +408,7 @@ function ExportPictures({ pictures, through, mid, cwd }: { pictures: ReplyPictur
 export function LocalImage({ mid, cwd, src, alt = "" }: { mid: string; cwd?: string; src: string; alt?: string }) {
   const narrow = useMedia(NARROW);
   const [open, setOpen] = useState(false);
+  const { replyItem } = useContext(ReplyPicturesContext);
   const exporting = useContext(ReplyPicturesExport);
   const resolved = resolveRef(cwd ?? "", src) || src;
   const name = fileName(resolved);
@@ -421,7 +424,8 @@ export function LocalImage({ mid, cwd, src, alt = "" }: { mid: string; cwd?: str
     );
   }
   const height = narrow ? PICTURE_H_NARROW : PICTURE_H;
-  const viewer: ViewerImage[] = [{ id: `local:${resolved}`, src: fileDownloadURL(mid, resolved, cwd, { inline: true }), label: alt || name, name }];
+  const image = replyItem ? { item: replyItem, src } : undefined;
+  const viewer: ViewerImage[] = [{ id: `local:${resolved}`, image, src: fileDownloadURL(mid, resolved, cwd, { inline: true }), label: alt || name, name }];
   return (
     <span className="inline-block align-middle" data-reply-images="" data-reply-images-kind="local">
       <Single

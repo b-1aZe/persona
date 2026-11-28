@@ -2777,7 +2777,7 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
         </Suspense>
       )}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} onScroll={onScroll} data-chat-scroll data-chat-context-window={detached || undefined} className="relative h-full overflow-y-auto [overflow-anchor:none]">
+        <div ref={scrollRef} onScroll={onScroll} data-chat-scroll data-chat-draft-key={draftKey} data-chat-context-window={detached || undefined} className="relative h-full overflow-y-auto [overflow-anchor:none]">
           <ChatActionsContext.Provider value={actions}>
           <div data-chat-content className="mx-auto flex w-full max-w-[880px] flex-col gap-3.5 px-5 pt-7 pb-10 sm:px-8">
             {session?.start_error && (session.start_error_code ? (

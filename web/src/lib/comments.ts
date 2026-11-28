@@ -88,6 +88,8 @@ export interface QuoteComment {
   /** The reader's note (at most MAX_COMMENT_CHARS). */
   body: string;
   anchor?: TextAnchor;
+  /** A whole reply image: the transcript item and its original Markdown reference. */
+  image?: { item: string; src: string };
   spot?: CodeSpot;
   /** The displayed file location and, for a draft, the file panel it came from. */
   file?: { location: string; panel?: Extract<Panel, { kind: "file" }> };
@@ -255,9 +257,13 @@ export function commentBlock(q: DraftQuote, n: number, images?: readonly number[
   } else {
     out.push(`Comment ${n}`);
     if (images?.length) out.push(`Attached images for this comment (positions in this message): ${images.join(", ")}`);
-    out.push("Selected text:", ...q.text.split("\n").map((l) => `> ${l}`));
-    // Old clients still read the selection. They show these lines at the start of the note.
-    if (c.file) out.push(`File: ${c.file.location}`);
+    if (c.image) {
+      out.push(`Source reply: ${c.image.item}`, `Image: ${c.image.src}`);
+    } else {
+      out.push("Selected text:", ...q.text.split("\n").map((l) => `> ${l}`));
+      // Old clients still read the selection. They show these lines at the start of the note.
+      if (c.file) out.push(`File: ${c.file.location}`);
+    }
   }
   if (note) out.push("", note);
   return out.join("\n");
@@ -271,6 +277,9 @@ export function parseCommentBlock(block: string): DraftQuote | null {
   let i = 1;
   if (head[1] === "Comment") {
     if (/^Attached images for this comment \(positions in this message\): \d+(, \d+)*$/.test(lines[i] ?? "")) i++;
+    const item = /^Source reply: (.+)$/.exec(lines[i] ?? "")?.[1];
+    const src = /^Image: (.+)$/.exec(lines[i + 1] ?? "")?.[1];
+    if (item && src) return { text: src, comment: { body: lines.slice(i + 2).join("\n").trim(), image: { item, src } } };
     if (lines[i]?.trim() === "Selected text:") i++;
     const words: string[] = [];
     while (i < lines.length && /^ {0,3}>/.test(lines[i])) words.push(lines[i++].replace(/^ {0,3}> ?/, ""));

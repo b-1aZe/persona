@@ -6824,8 +6824,16 @@ At most one quote block starts a message (the quoted words; for a task card, the
 >
 > Make it the primary color
 
+> Comment 4
+> Source reply: reply-12
+> Image: figures/revised/legend.png
+>
+> Increase the legend size.
+
 The user's typed text
 ```
+
+Web whole-image comments (#5785) identify the source transcript item and the image reference from that reply. The viewer’s temporary download or proxy URL stays out of the message. Older clients display the target lines with the note.
 
 When the selected text is from a Web file preview, a `File: <path>` line follows the quoted text, before the blank line. Source selections append the line or range to the path, as in `File: /work/src/app.ts:12-14`. Older clients read the same quote and show the location with the note.
 
@@ -6833,7 +6841,7 @@ Limits: comments up to 4000 characters, attached code up to 60 lines (extra line
 Web selection comments with images (#14518) add the optional image line before `Selected text:`. Its numbers are
 one-based positions in the message's `images` array. Main composer images come first, followed by each inline
 comment's images in comment order. All images count toward the same message limits.
-On reading back, web only recognizes blocks after the first block whose first line is `Comment N` / `Code comment N` / `Element comment N` (`splitQuotes`), so ordinary `> ` quotes are unaffected; editing a sent message puts comments back above the input. The iOS app writes and reads the same blocks (`MessageComments`) and draws them as cards in sent bubbles; both are checked against `spec/fixtures/comments`.
+On reading back, web only recognizes blocks after the first block whose first line is `Comment N` / `Code comment N` / `Element comment N` (`splitQuotes`), so ordinary `> ` quotes are unaffected; editing a sent message puts comments back above the input. The iOS app writes and reads the shared text, code, and element blocks (`MessageComments`) and draws them as cards in sent bubbles; both are checked against `spec/fixtures/comments`.
 
 ### Message source (#2125)
 

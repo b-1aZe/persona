@@ -122,6 +122,23 @@ describe("the block the agent reads", () => {
     expect(commentBlock(q, 1)).toBe(["Comment 1", "Selected text:", "> first", "> second", "", "needs a source"].join("\n"));
   });
 
+  it("sends the reply and original image after a text comment and restores both targets", () => {
+    const image = { item: "reply-2", src: "revised/chart.png" };
+    const words = textQuote("First paragraph", undefined);
+    words.comment!.body = "Keep this introduction";
+    const target: DraftQuote = { text: image.src, comment: { image, body: "Update the legend" } };
+    const split = splitQuotes(withQuoteBlock([words, target], "Please revise"))!;
+    expect(split.quotes).toEqual([
+      "Comment 1\nSelected text:\n> First paragraph\n\nKeep this introduction",
+      "Comment 2\nSource reply: reply-2\nImage: revised/chart.png\n\nUpdate the legend",
+    ]);
+    expect(split.rest).toBe("Please revise");
+    expect(parseQuotes(split.quotes)[1]).toMatchObject(target);
+    const attached = commentBlock(target, 2, [3]);
+    expect(attached).toContain("Attached images for this comment (positions in this message): 3");
+    expect(parseCommentBlock(attached)).toEqual(target);
+  });
+
   it("cuts the note at 4000 characters in the block too", () => {
     const q = textQuote("x", undefined);
     q.comment!.body = "n".repeat(MAX_COMMENT_CHARS + 10);

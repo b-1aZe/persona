@@ -79,7 +79,7 @@ export interface Outgoing {
   /** A real Quote action, not typed Markdown, a comment or an edit's restored quote (#10346): keep an earlier reader's
    *  place; already at the end, the send follows as usual. UI-only, never part of the hub's wire body. */
   quoteReply?: boolean;
-  /** Confirmed refusals return a message with comment images to the composer. UI-only. */
+  /** A confirmed refusal restores comments that target or carry an image to the composer. UI-only. */
   restoreCommentDraft?: boolean;
   /** An edit of the last message, sent after its rewind (#4605): the old prompt, which Claude may have put back in its
    *  box, cleared exactly before typing. A refusal leaves the edit in the box unsent, not as a failed bubble. */
@@ -950,7 +950,7 @@ export const Composer = memo(function Composer({
     const liveFiles = selected.filter((r) => r.kind === "file");
     const wire = withContexts(leading, body, images.length > 0) + (liveFiles.length ? `\n\n${liveFiles.map(contextXML).join("\n")}` : "");
     const ok = await onSend({ text: wire, images,
-      ...(commentImages.length ? { restoreCommentDraft: true } : {}),
+      ...(commentImages.length || q.some((quote) => quote.comment?.image) ? { restoreCommentDraft: true } : {}),
       ...(now && queues ? { sendNow: true } : {}),
       ...(quoteReply ? { quoteReply: true } : {}), ...(committed ? { edit: committed } : {}) }).catch((error) => {
       settleImages(false);

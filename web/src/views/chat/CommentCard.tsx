@@ -14,6 +14,7 @@ import { cx, EASE, toast } from "../../ui/atoms";
 import { Icon } from "../../ui/icons";
 import type { CommentBarAnchor } from "./CommentBar";
 import { CommentBarOverlay, preloadCommentBar } from "./CommentBarOverlay";
+import { NumberDot } from "./NumberDot";
 import { t } from "../../i18n";
 
 /** `staged`, `unstaged`, `commit 1a2b3c4d`, worded for the reader. */
@@ -35,8 +36,9 @@ export function elementWhere(e: ElementSpot): string {
   return [e.selector, e.port ? addressOf(e.url, e.port) : e.url].join(" · ");
 }
 
-/** Where a comment points, worded for the reader: a file's lines, or an element of a preview. */
+/** Where a comment points in a reply, a file, or a preview. */
 function whereOf(c: NonNullable<DraftQuote["comment"]>): string {
+  if (c.image) return t("chat-comments.image_target", { src: c.image.src });
   if (c.file) return c.file.location;
   return c.element ? elementWhere(c.element) : c.spot ? spotWhere(c.spot) : "";
 }
@@ -44,15 +46,6 @@ function whereOf(c: NonNullable<DraftQuote["comment"]>): string {
 /** Lines of code (or of an element's HTML) a comment carries beyond the ones sent. */
 function omittedOf(c: NonNullable<DraftQuote["comment"]>): number {
   return c.element?.omitted ?? c.spot?.omitted ?? 0;
-}
-
-/** The round number a comment carries, in the popover and next to its words in the transcript. */
-export function NumberDot({ n, className }: { n: number; className?: string }) {
-  return (
-    <span aria-hidden className={cx("flex size-4 shrink-0 items-center justify-center rounded-full bg-accent text-[10px] leading-none font-semibold text-white tabular-nums", className)}>
-      {n}
-    </span>
-  );
 }
 
 /** The words or the lines a comment is about: code in mono, one line of it each. */
@@ -124,6 +117,21 @@ export function goToComment(q: DraftQuote, handlers?: CommentNavigationHandlers)
   const c = q.comment;
   if (!c) return false;
   const notice = handlers?.onNotice ?? toast;
+  if (c.image) {
+    const { item, src } = c.image;
+    const key = `${handlers?.mid}/${handlers?.sid}`;
+    const chat = [...document.querySelectorAll<HTMLElement>("[data-chat-draft-key]")].find((el) => el.dataset.chatDraftKey === key);
+    const reply = [...chat?.querySelectorAll<HTMLElement>("[data-items]") ?? []].find((el) => el.dataset.items?.split(/\s+/).includes(item));
+    if (!reply) {
+      notice(t("chat-comments.jump_image_gone"));
+      return false;
+    }
+    // A gallery only draws its first six tiles. The reply remains the entry point for the rest.
+    const tile = [...reply.querySelectorAll<HTMLButtonElement>("button[data-reply-picture-src]")].find((el) => el.dataset.replyPictureSrc === src);
+    (tile ?? reply).scrollIntoView({ block: "center" });
+    tile?.focus({ preventScroll: true });
+    return true;
+  }
   const file = fileCommentPanel(c.file, handlers?.mid, handlers?.sid);
   if (file) {
     // Jump again even if the same file is open and the viewer has switched modes or scrolled away.
@@ -413,11 +421,26 @@ export function CommentBlock({ quote, n, open, navigation }: CommentBlockProps) 
         ) : (
           <span className={headClass}>{head}</span>
         )}
-        {where && <span className="max-w-full truncate font-mono text-[11px] text-ink-3">{where}</span>}
-        <Excerpt q={quote} lines={3} />
+        {where && <span className={cx("max-w-full font-mono text-[11px] text-ink-3", c.image ? "[overflow-wrap:anywhere]" : "truncate")}>{where}</span>}
+        {!c.image && <Excerpt q={quote} lines={3} />}
         {omittedOf(c) > 0 && <span className="text-[11px] text-ink-3">{t("chat-comments.omitted", { count: omittedOf(c) })}</span>}
         {c.body && <span className="text-[13px] leading-[1.55] whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{c.body}</span>}
       </div>
     </div>
   );
+}
+
+/** Reopen the target of a comment read from a sent message in this conversation. */
+export function SentCommentBlock({ quote: q, n, mid, sid }: { quote: DraftQuote; n: number; mid?: string; sid?: string }) {
+  const comment = q.comment!;
+  const spot = comment.spot;
+  const cwd = mid && sid ? getSession(mid, sid)?.cwd : undefined;
+  // the path the agent read is relative to the session's folder; with the folder known it opens again
+  let open = spot && mid && cwd ? () => openSpot({ ...spot, mid, sid, cwd, path: spot.diff || spot.file.startsWith("/") ? spot.path : `${cwd.replace(/\/+$/, "")}/${spot.file}` }) : undefined;
+  if ((comment.image && mid && sid) || fileCommentPanel(comment.file, mid, sid)) open = () => goToComment(q, { mid, sid });
+  // an element of a preview: that session's preview, at the page it was on (the port is the page's)
+  const el = comment.element;
+  const port = el ? Number(new URL(el.url, "http://localhost").port) : 0;
+  if (el && mid && sid && cwd && port) open = () => goToComment({ ...q, comment: { ...q.comment!, element: { ...el, mid, sid, cwd, port } } });
+  return <CommentBlock quote={q} n={n} open={open} />;
 }

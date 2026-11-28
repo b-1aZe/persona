@@ -689,7 +689,7 @@ function componentsFor(mid: string, cwd: string | undefined, readOnly = false): 
 // "Reply animation" off or reduced motion; once streaming ends it is plain Markdown again, without the fade's spans.
 // `lineBreaks`: a reply, read line by line as it was written (#2088, `reply-breaks.ts`): a single line break is one,
 // and steps numbered on from 5 right under a line of text are a list.
-export const Markdown = memo(function Markdown({ text: raw, small, compact, mid, cwd, streaming, fade, lineBreaks, askImages, readOnly }: { text: string; small?: boolean; compact?: boolean; mid?: string; cwd?: string; streaming?: boolean; fade?: boolean; lineBreaks?: boolean; askImages?: boolean; readOnly?: boolean }) {
+export const Markdown = memo(function Markdown({ text: raw, small, compact, mid, cwd, streaming, fade, lineBreaks, askImages, readOnly, replyItem }: { text: string; small?: boolean; compact?: boolean; mid?: string; cwd?: string; streaming?: boolean; fade?: boolean; lineBreaks?: boolean; askImages?: boolean; readOnly?: boolean; replyItem?: string }) {
   const inheritedReadOnly = useReadOnlyFile();
   const ro = Boolean(readOnly || inheritedReadOnly);
   const components = useMemo<Components>(() => (mid ? componentsFor(mid, cwd, ro) : markdownComponents), [mid, cwd, ro]);
@@ -714,7 +714,7 @@ export const Markdown = memo(function Markdown({ text: raw, small, compact, mid,
   // The step that lifts block pictures into runs, once the text names a web or (with `mid`) local picture (#9475, #12288).
   const wantsReplyImages = useMemo(() => (mid ? /!\[[^\]\n]*\]\(/.test(text) : /!\[[^\]\n]*\]\(\s*<?https?:/i.test(text)), [text, mid]);
   const images = useReplyImages(wantsReplyImages)?.rehypeReplyImages;
-  const picturesContext = useMemo(() => ({ text, ask: Boolean(askImages), mid, cwd }), [text, askImages, mid, cwd]);
+  const picturesContext = useMemo(() => ({ text, ask: Boolean(askImages), mid, cwd, replyItem }), [text, askImages, mid, cwd, replyItem]);
   const rehypePlugins = useMemo<PluggableList>(
     () => [...(images ? [[images, { local: Boolean(mid) }] as [typeof images, { local: boolean }]] : []), ...(katex ? [katex] : []), ...(highlight ? [highlight] : []), ...(key ? [rehypePathLinks(linkable)] : []), rehypeTableBreaks, rehypeLinkedCode],
     // eslint-disable-next-line react-hooks/exhaustive-deps

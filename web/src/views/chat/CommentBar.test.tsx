@@ -11,7 +11,7 @@ import { ChatActionsContext } from "./chat-actions";
 import { CommentBar, placeCommentBar } from "./CommentBar";
 import { preloadCommentBar } from "./CommentBarOverlay";
 import { CommentMarks } from "./CommentMarks";
-import { QuoteBars } from "./Quote";
+import { CommentsChip, QuoteBars } from "./Quote";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -31,7 +31,7 @@ describe("inline comment floating bar and compact composer chip (#11585)", () =>
   let root: Root;
   const draftKey = "m1/s1";
 
-  beforeAll(async () => { await preloadCommentBar(); });
+  beforeAll(async () => { await Promise.all([preloadCommentBar(), CommentsChip.preload()]); });
 
   beforeEach(() => {
     host = document.createElement("div");

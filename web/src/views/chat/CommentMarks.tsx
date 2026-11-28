@@ -11,7 +11,7 @@ import { cx } from "../../ui/atoms";
 import { scrollBehavior } from "../../ui/stream/motion";
 import type { CommentBarAnchor } from "./CommentBar";
 import { CommentBarOverlay, preloadCommentBar } from "./CommentBarOverlay";
-import { NumberDot } from "./CommentCard";
+import { NumberDot } from "./NumberDot";
 import { useChatActions } from "./chat-actions";
 import { t } from "../../i18n";
 import { composing } from "../../lib/send-history";

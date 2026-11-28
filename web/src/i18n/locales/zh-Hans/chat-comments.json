@@ -1,5 +1,8 @@
 {
   "comment_n": "评论 {n}",
+  "comment_image": "评论图片",
+  "image_target": "图片：{src}",
+  "jump_image_gone": "原回复已不在当前页面上。",
   "placeholder": "添加可选评论…",
   "note_label": "评论 {n}",
   "save": "保存评论",

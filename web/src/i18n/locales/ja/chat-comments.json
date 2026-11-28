@@ -1,5 +1,8 @@
 {
   "comment_n": "コメント {n}",
+  "comment_image": "画像にコメント",
+  "image_target": "画像：{src}",
+  "jump_image_gone": "元の返信は画面に表示されていません",
   "placeholder": "任意のコメントを追加…",
   "note_label": "コメント {n}",
   "save": "コメントを保存",

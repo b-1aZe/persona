@@ -133,6 +133,24 @@ describe("CommentCard with controlled handlers", () => {
     expect(mocks.toast).not.toHaveBeenCalled();
   });
 
+  it("finds the same-name image by its full reference within its own chat and reply", () => {
+    const image = { item: "reply-2", src: "revised/chart.png" };
+    const quote = { text: image.src, comment: { image, body: "Update the legend" } };
+    host.innerHTML = `
+      <div data-chat-draft-key="m/other"><div data-items="reply-2"><button data-reply-picture-src="revised/chart.png"></button></div></div>
+      <div data-chat-draft-key="m/chat">
+        <div data-items="reply-1"><button data-reply-picture-src="revised/chart.png"></button></div>
+        <div data-items="reply-2"><button data-reply-picture-src="original/chart.png"></button><button data-reply-picture-src="revised/chart.png"></button></div>
+      </div>`;
+    const target = host.querySelectorAll("button")[3];
+    target.scrollIntoView = vi.fn();
+    expect(goToComment(quote, { mid: "m", sid: "chat" })).toBe(true);
+    expect(target.scrollIntoView).toHaveBeenCalled();
+    expect(document.activeElement).toBe(target);
+    expect(goToComment(quote, { mid: "m", sid: "missing" })).toBe(false);
+    expect(mocks.toast).toHaveBeenCalledWith(t("chat-comments.jump_image_gone"));
+  });
+
   it("routes code spot and text comments through controlled callbacks without touching default singletons", () => {
     const openSpot = vi.fn().mockReturnValue(true);
     const jumpToText = vi.fn().mockReturnValue(true);

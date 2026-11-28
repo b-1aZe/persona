@@ -8,6 +8,8 @@ export interface ReplyPictures {
   ask: boolean;
   mid?: string;
   cwd?: string;
+  /** The transcript item when these pictures belong to an Assistant or Agent reply. */
+  replyItem?: string;
 }
 
 export const ReplyPicturesContext = createContext<ReplyPictures>({ text: "", ask: false });

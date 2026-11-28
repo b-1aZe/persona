@@ -1,5 +1,8 @@
 {
   "comment_n": "Comment {n}",
+  "comment_image": "Comment on image",
+  "image_target": "Image: {src}",
+  "jump_image_gone": "The original reply is no longer on screen",
   "placeholder": "Add optional comment…",
   "note_label": "Comment {n}",
   "save": "Save comment",

@@ -307,7 +307,7 @@ export const Answer = memo(function Answer({ item, streaming, mid, sid, fade, st
       <div className={ANSWER} data-answer={live ? "streaming" : true} data-source-fingerprint={item?.source_fingerprint} data-items={item?.id}>
         {/* the cards in it are this item's blocks (ui/AssistantCard.tsx): `<item id>/<n>` */}
         <CardItem.Provider value={item?.id ? { id: item.id, text } : null}>
-          <Markdown text={text} mid={mid} cwd={cwd} streaming={live || undefined} fade={fade || undefined} lineBreaks />
+          <Markdown text={text} mid={mid} cwd={cwd} replyItem={item?.id} streaming={live || undefined} fade={fade || undefined} lineBreaks />
         </CardItem.Provider>
       </div>
       {full.more}

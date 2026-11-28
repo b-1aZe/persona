@@ -280,6 +280,24 @@ describe("inline selection comment images", () => {
     expect(bar().querySelector("img")?.alt).toBe("detail.png");
   });
 
+  it("returns mixed text and whole-image comments to the composer on refusal, then sends the same batch once", async () => {
+    const onSend = vi.fn<(message: Outgoing) => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValue(true);
+    renderChat(onSend);
+    await comment();
+    save();
+    const image = { item: "reply-2", src: "revised/chart.png" };
+    act(() => { addQuote(key, { text: image.src, comment: { body: "Update the legend", image } }, false); });
+    const original = getQuotes(key).list;
+    await send();
+    expect(onSend.mock.calls[0][0].restoreCommentDraft).toBe(true);
+    expect(getQuotes(key).list).toEqual(original);
+    await send();
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1][0]).toEqual(onSend.mock.calls[0][0]);
+    expect(splitQuotes(onSend.mock.calls[1][0].text)?.quotes).toHaveLength(2);
+    expect(getQuotes(key).list).toEqual([]);
+  });
+
   it("restores a refused send's images alongside a newer draft and can retry", async () => {
     let refuse!: (ok: boolean) => void;
     const onSend = vi.fn<(m: Outgoing) => Promise<boolean>>()

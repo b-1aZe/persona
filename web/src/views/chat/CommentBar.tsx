@@ -12,7 +12,7 @@ import { enterSends, hasFinePointer, NO_HOVER, PHONE, useMedia } from "../../lib
 import { cx, EASE, IconButton } from "../../ui/atoms";
 import { AttachmentTray } from "../../ui/AttachmentTray";
 import { Icon } from "../../ui/icons";
-import { NumberDot } from "./CommentCard";
+import { NumberDot } from "./NumberDot";
 import { t } from "../../i18n";
 
 export interface CommentBarAnchor {
@@ -278,6 +278,7 @@ export function CommentBar({
       role={focused || captureEscape ? "dialog" : undefined}
       aria-label={ariaLabel ?? t("chat-comments.placeholder")}
       data-comment-bar
+      data-dialog-footer={docked || undefined}
       data-focused={focused ? "true" : "false"}
       data-docked={docked ? "true" : undefined}
       onPointerDown={(e) => e.stopPropagation()}

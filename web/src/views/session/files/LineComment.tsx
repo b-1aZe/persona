@@ -6,7 +6,7 @@ import { lineRange } from "../../../lib/comments";
 import { Icon } from "../../../ui/icons";
 import type { CommentBarAnchor } from "../../chat/CommentBar";
 import { CommentBarOverlay, preloadCommentBar } from "../../chat/CommentBarOverlay";
-import { NumberDot } from "../../chat/CommentCard";
+import { NumberDot } from "../../chat/NumberDot";
 import { t } from "../../../i18n";
 
 export interface LinePick {

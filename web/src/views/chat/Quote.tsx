@@ -2,17 +2,19 @@
 // two-line plain summary, × to drop it; in a sent bubble, the leading `> ` block as a three-line card that opens to
 // the whole passage. The message itself still carries the `> ` block (lib/drafts.ts withQuoteBlock / splitQuote). A
 // task's card quotes as its title (and todo id, on the block's first line) and what its agent said last.
-import { useLayoutEffect, useRef, useState } from "react";
-import { openSpot } from "../../lib/comments";
+import { Suspense, useLayoutEffect, useRef, useState } from "react";
+import { lazyPage } from "../../lib/lazy-page";
 import { parseQuote, parseQuotes, type CommentImagePicker, type DraftQuote } from "../../lib/drafts";
-import { getSession } from "../../lib/store";
 import { clock } from "../../lib/format";
 import { plainMarkdown } from "../../lib/plain-markdown";
 import { cx, EASE } from "../../ui/atoms";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { CommentBlock, CommentsChip, fileCommentPanel, goToComment } from "./CommentCard";
 import { t } from "../../i18n";
+
+// A chat with no comments needs neither the comments list nor the sent cards' navigation.
+export const CommentsChip = lazyPage(() => import("./CommentCard").then((m) => m.CommentsChip));
+export const SentCommentBlock = lazyPage(() => import("./CommentCard").then((m) => m.SentCommentBlock));
 
 /** "Quoting Persona · 16:45" / "Quoting task "…" · 16:45": who said it, or which task, and when, as far as is known. */
 export function quoteSource(q: DraftQuote): string {
@@ -62,7 +64,11 @@ export function QuoteBars({ draftKey, quotes, onRemove, onAddCommentImages }: {
       {messageQuotes.map((q) => (
         <QuoteBar key={q.id} quote={q} onRemove={() => onRemove(q.id!)} />
       ))}
-      {comments.length > 0 && <CommentsChip draftKey={draftKey} comments={comments} onRemove={onRemove} onAddImages={onAddCommentImages} />}
+      {comments.length > 0 && (
+        <Suspense fallback={null}>
+          <CommentsChip draftKey={draftKey} comments={comments} onRemove={onRemove} onAddImages={onAddCommentImages} />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -76,16 +82,7 @@ export function QuoteStack({ blocks, mid, sid }: { blocks: readonly string[]; mi
     <>
       {quotes.map((q, i) => {
         if (!q.comment) return <QuoteBlock key={i} text={blocks[i]} />;
-        const spot = q.comment.spot;
-        const cwd = mid && sid ? getSession(mid, sid)?.cwd : undefined;
-        // the path the agent read is relative to the session's folder; with the folder known it opens again
-        let open = spot && mid && cwd ? () => openSpot({ ...spot, mid, sid, cwd, path: spot.diff || spot.file.startsWith("/") ? spot.path : `${cwd.replace(/\/+$/, "")}/${spot.file}` }) : undefined;
-        if (fileCommentPanel(q.comment.file, mid, sid)) open = () => goToComment(q, { mid, sid });
-        // an element of a preview: that session's preview, at the page it was on (the port is the page's)
-        const el = q.comment.element;
-        const port = el ? Number(new URL(el.url, "http://localhost").port) : 0;
-        if (el && mid && sid && cwd && port) open = () => goToComment({ ...q, comment: { ...q.comment!, element: { ...el, mid, sid, cwd, port } } });
-        return <CommentBlock key={i} quote={q} n={++n} open={open} />;
+        return <Suspense key={i} fallback={null}><SentCommentBlock quote={q} n={++n} mid={mid} sid={sid} /></Suspense>;
       })}
     </>
   );

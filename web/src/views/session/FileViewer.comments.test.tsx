@@ -8,7 +8,7 @@ import { sendDraft, splitQuotes, setQuotes } from "../../lib/drafts";
 import { closePanel, getPanel } from "../../lib/panel";
 import { preloadCommentBar } from "../chat/CommentBarOverlay";
 import { Composer, type Outgoing } from "../chat/Composer";
-import { QuoteStack } from "../chat/Quote";
+import { QuoteStack, SentCommentBlock } from "../chat/Quote";
 import { SidePanel } from "../SidePanel";
 import { FileViewerPanel } from "./FileViewer";
 
@@ -61,7 +61,7 @@ const frame = () => host.querySelector<HTMLIFrameElement>("iframe");
 const rect = { left: 50, top: 80, right: 150, bottom: 100, width: 100, height: 20 } as DOMRect;
 
 beforeAll(async () => {
-  await preloadCommentBar();
+  await Promise.all([preloadCommentBar(), SentCommentBlock.preload()]);
 });
 
 beforeEach(() => {

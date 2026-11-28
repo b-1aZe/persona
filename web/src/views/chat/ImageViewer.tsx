@@ -3,11 +3,11 @@
 // a double click / tap zooms in there and back, + / - / 0 from the keyboard; "Edit" (box + pen, then into the composer
 // for the next message), "Copy" where the browser allows it, "Download", "Open in new tab". Esc or a click beside the picture
 // closes it (not while zoomed).
-import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { imageURL } from "../../lib/api";
 import { useCloseOnBack } from "../../lib/back-close";
-import { sendDraft, type DraftImage } from "../../lib/drafts";
+import { addQuote, getQuotes, sendDraft, type DraftImage } from "../../lib/drafts";
 import { safeWebURL } from "../../lib/format";
 import { isSameOriginBlobURL, MEDIA_CTRL_CHARS, safeApiPath } from "../../lib/safe-media-url";
 import type { EditedImage } from "../../lib/image-edit";
@@ -18,6 +18,9 @@ import { Icon, type IconName } from "../../ui/icons";
 import { NARROW, useMedia } from "../../ui/media-query";
 import { useModalFocus } from "../../ui/overlay";
 import { lazyPage } from "../../lib/lazy-page";
+import type { QuoteComment } from "../../lib/comments";
+import type { CommentBarAnchor } from "./CommentBar";
+import { CommentBarOverlay } from "./CommentBarOverlay";
 import { useChatActions } from "./chat-actions";
 import { t } from "../../i18n";
 
@@ -28,6 +31,8 @@ export interface ViewerImage {
   id: string;
   src: string;
   mime?: string;
+  /** The original reference in a reply, separate from the authenticated URL used to display it. */
+  image?: QuoteComment["image"];
   /** What it is (a file's name, "Screenshot · MacBook"): on top, beside n / m. */
   label?: string;
   /** The name "Download" saves it under. */
@@ -107,12 +112,26 @@ export function ImageViewer({
   const [view, setView] = useState<View>(IDENTITY);
   const [editing, setEditing] = useState(false);
   const [failed, setFailed] = useState<Record<string, boolean>>({});
+  const chat = useChatActions();
+  const [note, setNote] = useState<{ image: NonNullable<ViewerImage["image"]>; draftKey: string; number: number; anchor: CommentBarAnchor } | null>(null);
+  const noteButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const swipe = useRef<{ x: number; y: number } | null>(null);
   const cur = images[index];
   const many = images.length > 1;
   // Back (a phone's back gesture) closes the viewer, not the chat under it
-  useCloseOnBack(true, onClose, useMedia(NARROW));
+  const narrow = useMedia(NARROW);
+  const [backStep, setBackStep] = useState(0);
+  useCloseOnBack(true, () => {
+    if (!note) return onClose();
+    setNote(null);
+    setBackStep((step) => step + 1);
+  }, narrow, backStep);
+  const wasWriting = useRef(false);
+  useLayoutEffect(() => {
+    if (wasWriting.current && !note) noteButton.current?.focus({ preventScroll: true });
+    wasWriting.current = Boolean(note);
+  }, [note]);
   // fitted like the app's viewer (scaled to fit, small pictures too): the picture's own size and the room it has
   const area = useRef<HTMLDivElement>(null);
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
@@ -205,7 +224,7 @@ export function ImageViewer({
   }, []);
 
   useEffect(() => {
-    if (editing) return;
+    if (editing || note) return;
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -221,7 +240,7 @@ export function ImageViewer({
     addEventListener("keydown", key, true);
     return () => removeEventListener("keydown", key, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, images.length, onClose]);
+  }, [editing, note, images.length, onClose]);
 
   // focus in, Tab kept in, back to what opened it on close; the editor on top (portaled beside the viewer) has its own
   useModalFocus(box);
@@ -299,10 +318,18 @@ export function ImageViewer({
 
   // the bottom bar; more than three don't fit a phone with their words, so there they are icons
   const off = failed[cur.id];
+  const canComment = Boolean(chat?.canCompose && cur.image);
+  const startNote = () => {
+    if (!chat?.canCompose || !cur.image || !noteButton.current) return;
+    const { left, right, top, bottom } = noteButton.current.getBoundingClientRect();
+    const number = getQuotes(chat.draftKey).list.filter((q) => q.comment).length + 1;
+    setNote({ image: cur.image, draftKey: chat.draftKey, number, anchor: { x: (left + right) / 2, top, bottom } });
+  };
   const bar: (ViewerAction & { disabled?: boolean })[] = [
     ...(attach ? [{ key: "edit", icon: "pencil" as const, label: t("chat-imageviewer.edit"), run: () => setEditing(true), disabled: off }] : []),
     ...(canCopyImage() ? [{ key: "copy", icon: "copy" as const, label: t("chat-imageviewer.copy"), run: () => void copy(), disabled: off }] : []),
     { key: "download", icon: "download", label: t("chat-imageviewer.download"), run: () => void download(), disabled: off },
+    ...(canComment ? [{ key: "comment", icon: "chat" as const, label: t("chat-comments.comment_image"), run: startNote, disabled: off }] : []),
     ...(actions?.(index) ?? []),
   ];
 
@@ -316,7 +343,7 @@ export function ImageViewer({
       className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white outline-none backdrop-blur-sm"
       style={{ animation: "fade-in 150ms ease-out both" }}
     >
-      <div className="flex h-14 shrink-0 items-center gap-2 px-3">
+      <div inert={Boolean(note)} className="flex h-14 shrink-0 items-center gap-2 px-3">
         <RoundButton icon="x" label={t("chat-imageviewer.close")} onClick={onClose} />
         <div className="flex-1" />
         {cur.label && <span className="min-w-0 truncate text-[13px] font-medium">{cur.label}</span>}
@@ -331,6 +358,7 @@ export function ImageViewer({
 
       <div
         ref={area}
+        inert={Boolean(note)}
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-4 sm:px-16"
         // the viewer takes every touch gesture: a pinch zooms the picture, not the page
         style={{ touchAction: "none" }}
@@ -457,12 +485,38 @@ export function ImageViewer({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center justify-center gap-2 px-4 pt-2 pb-[max(12px,env(safe-area-inset-bottom))]">
+      <div inert={Boolean(note)} data-dialog-footer className={cx("flex shrink-0 items-center justify-center gap-2 px-4 pt-2 pb-[max(12px,env(safe-area-inset-bottom))]", note && "invisible")}>
         {bar.map((b) => (
-          <BarButton key={b.key} icon={b.icon} label={b.label} onClick={b.run} disabled={b.disabled} compact={bar.length > 3} />
+          <BarButton
+            key={b.key}
+            ref={b.key === "comment" ? noteButton : undefined}
+            icon={b.icon}
+            label={b.label}
+            onClick={b.run}
+            disabled={b.disabled}
+            compact={bar.length > 3 || (bar.length === 3 && canComment && b.key !== "comment")}
+          />
         ))}
       </div>
 
+      {note && (
+        <CommentBarOverlay
+          portal={box.current}
+          anchor={note.anchor}
+          context={note.image.src}
+          showContextOnDesktop
+          number={note.number}
+          ariaLabel={t("chat-comments.note_label", { n: note.number })}
+          autoFocus
+          captureEscape
+          onCancel={() => setNote(null)}
+          onSave={(body) => {
+            addQuote(note.draftKey, { text: note.image.src, comment: { body, image: note.image } }, false);
+            setNote(null);
+            toast(t("chat-comments.added", { n: note.number }), "ok");
+          }}
+        />
+      )}
       {editing && attach && (
         <Suspense fallback={null}>
           <ImageEditor
@@ -517,11 +571,12 @@ function SideButton({ side, disabled, onClick }: { side: "left" | "right"; disab
 }
 
 /** `compact`: just its icon on a phone (its words for screen readers and as its tooltip). */
-function BarButton({ icon, label, onClick, disabled, compact }: { icon: IconName; label: string; onClick: () => void; disabled?: boolean; compact?: boolean }) {
+function BarButton({ ref, icon, label, onClick, disabled, compact }: { ref?: Ref<HTMLButtonElement>; icon: IconName; label: string; onClick: () => void; disabled?: boolean; compact?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      ref={ref}
       disabled={disabled}
       title={compact ? label : undefined}
       className={cx(
